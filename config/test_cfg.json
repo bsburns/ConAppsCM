@@ -1,0 +1,35 @@
+{
+    "dataStrmCfgList": [
+        {
+            "MaxBurstSizePackets": 1,
+            "MinBurstSizePackets": 1,
+            "NumberPacketsToGenerate": 2,
+            "PacketRate_pps": 1234.0,
+            "PacketSize_bytes": 1500,
+            "StartTime_ns": 0,
+            "StreamName": "StrmTest1"
+        }
+    ],
+    "outputCfg": {
+        "OutputFile": "default_pkt.csv"
+    },
+    "rootCfg": {
+        "SchedulerUpdateInterval_ns": 1000,
+        "StatisticsUpdateInterval_ns": 100000000
+    },
+    "schedulerCfg": {
+        "MaxNumberStripes": 2,
+        "MinNumberStripes": 1,
+        "Mode": "DYNAMIC_STRIPES",
+        "RevaluationInterval_ns": 100
+    },
+    "stripeCfg": {
+        "AbsMaxPacketRate_pps": 41000.0,
+        "Mode": "NONE",
+        "Parm_D_rows": 100,
+        "Parm_L_cols": 5,
+        "ReportMaxPacketRate_pps": 40000.0,
+        "ReportMinPacketRate_pps": 8000.0,
+        "TargetPacketRate_pps": 8000.0
+    }
+}
