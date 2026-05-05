@@ -17,6 +17,19 @@
 #include <ctime>
 
 namespace util {
+
+inline std::string trim(const std::string& s) {
+    // Whitespace is one of: space, tab, carriage return,
+    // line feed, form feed, or vertical tab.
+    const char* whitespace = " \t\n\r\f\v";
+    size_t begin = s.find_first_not_of(whitespace);
+    if (begin == std::string::npos) {
+        return std::string{};
+    }
+    size_t end = s.find_last_not_of(whitespace);
+    return std::string{ s.substr(begin, end - begin + 1) };
+}
+
 inline std::vector<std::string> splitBySpace(const std::string &input) 
 {
 	std::vector<std::string> tokens;

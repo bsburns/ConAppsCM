@@ -10,13 +10,16 @@
 
 #include <iostream>
 #include <thread>
+#include <algorithm>
+#include <cctype>
 // #include <boost/program_options.hpp>
 
 
 #include "Simulator/RootSim.h"
 #include "cli/CLI.h"
-#include "utilities/logger.h"
-#include "utilities/watchdog.h"
+#include "logger.h"
+#include "watchdog.h"
+#include "commandLineParser.h"
 
 
 // namespace po = boost::program_options;
@@ -25,6 +28,55 @@ std::string TestName;
 
 int main(int argc, char* argv[])
 {
+    LoggerVerbosity verbosity = LoggerVerbosity::CRITICAL;
+    TestName = "default";
+	double WatchdogTimeout = 360;
+    std::string LogFile;
+
+    CommandLineParser CLP;
+    CLP.AddCommand({
+        CLP_Command("version", "Show version information", [](const std::string& argument) {
+            std::cout << "Console Simulator Version: 1.0.0.2\n";
+        }),
+        CLP_Command("verbosity,v", "Set logging verbosity level", [&verbosity](const std::string& argument) {
+            std::string uarg = argument;
+            std::transform(uarg.begin(), uarg.end(), uarg.begin(), ::toupper);
+            verbosity = magic_enum::enum_cast<LoggerVerbosity>(uarg).value_or(LoggerVerbosity::NOTSET);
+            if (verbosity == LoggerVerbosity::NOTSET) {
+                try {
+                    int v_int = std::stoi(argument);
+                    verbosity = static_cast<LoggerVerbosity>(v_int);
+                }
+                catch (const std::exception& e) {
+                    std::cerr << "Invalid verbosity level: " << argument << ". Setting to NOTSET.\n";
+                }
+			}
+            std::cout << "\nSetting Logger Verbosity to " << std::string(magic_enum::enum_name(verbosity))
+                << " (" << static_cast<int>(verbosity) << ")"
+				<< " argumnet=" << argument
+                << "\n";
+        }, "CRITICAL", typeid(std::string)),
+        CLP_Command("testname, t", "Specifies test name", [](const std::string& argument) {
+            TestName = argument;
+        }, "default", typeid(std::string)),
+        CLP_Command("logfile, l", "Specifies Log file name", [&LogFile](const std::string& argument) {
+            LogFile = argument;
+        }, "default.log", typeid(std::string)),
+        CLP_Command("watchdog,w", "Watchdog timeout in seconds", [&WatchdogTimeout](const std::string& argument) {
+            try {
+                WatchdogTimeout = std::stod(argument);
+                std::cout << "\nSetting Watchdog Timeout to " << WatchdogTimeout << " seconds\n";
+            }
+            catch (const std::exception& e) {
+                std::cerr << "Invalid watchdog timeout value: " << argument << ". Setting to default 360 seconds.\n";
+                WatchdogTimeout = 360;
+			}
+        }, "360", typeid(double)),
+        });
+	std::cout << "\nSetting DEFAULT command line arguments...\n";
+    CLP.SetDefaultValues();
+    std::cout << "\nParsing command line arguments...\n";
+    CLP.ProcessArguments(argc, argv);
     // po::options_description generic("Generic options");
     // generic.add_options()
     //     ("version", "print version string")
@@ -44,15 +96,7 @@ int main(int argc, char* argv[])
     // po::notify(vm);
 
 
-    // if (vm.count("help")) {
-    //   std::cout << cmdline_options << "\n";
-    //   return 1;
-    // }
 
-    // if (vm.count("version")) {
-    //   std::cout << "Console Simulator Version 1.0.0.2\n";
-    //   return 1;
-	// }
 
     // // If config file specified, read it
     // if (vm.count("config")) {
@@ -69,27 +113,8 @@ int main(int argc, char* argv[])
     // }
 
 
-    TestName = "default";
-    std::string LogFile = "default.log";
-    // if (vm.count("logfile") == 0 && vm.count("testname") == 0) {
-    //     std::cout << "Neither testname or logfile parameters were specified, so setting log filename to " << LogFile << "\n";
-    // }
-    // else if (vm.count("testname")) {
-    //     TestName = vm["testname"].as<std::string>();
-    //     std::cout << "Test Name = " << TestName << "\n";
-    //     LogFile = TestName + ".log";
-    // }
-    // if (vm.count("logfile")) {
-    //     LogFile = vm["logfile"].as<std::string>();
-    //     std::cout << "Setting log filename to " << LogFile << "\n";
-    // }
     LOG_INST.SetLogFile(LogFile);
-    LOG(LoggerVerbosity::CRITICAL, "Starting log");
-    // if (vm.count("verbosity")) {
-    //   std::cout << "\nSetting Verbosity level to "
-    //             << vm["verbosity"].as<std::string>() << ".\n";
-	//   LOG_INST.SetVerbosityStr(vm["verbosity"].as<std::string>());
-	// }
+    LOG(verbosity, "Starting log");
 
 	// Start CLI input thread
 	auto& CMP = CliMenuProcessor::GetInstance();
@@ -103,7 +128,7 @@ int main(int argc, char* argv[])
 	// Start WATCHDOG thread to monitor and adjust FEC stripes
     Watchdog& watchdog = Watchdog::GetInstance();
     // watchdog.SetTimeout(vm["watchdog"].as<double>());
-    watchdog.SetTimeout(5);
+    watchdog.SetTimeout(WatchdogTimeout);
     std::thread watchdog_thread(Watchdog::monitor_thread);
     
 
