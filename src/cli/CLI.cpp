@@ -11,13 +11,12 @@
 #include <string>
 #include <atomic>
 #include <cstdio>
+#include <conio.h> // For _kbhit() and _getch()
 
 #include "CLI.h"
 #include "CliMenu.h"
-#include "utilities/logger.h"
-// #include "RootSim.h"
-// #include "SimConfiguration.h"
-#include "utilities/watchdog.h"
+#include "logger.h"
+#include "threadManager.h"
 
  /*------------------------------------------------------------------------
   * moveCursor()
@@ -201,23 +200,32 @@ void CliMenuProcessor::ProcessChar(unsigned char ch) {
 void CliMenuProcessor::GetUserInput_thread() {
 
     // Set up command line processor
+
 	auto& CMP = CliMenuProcessor::GetInstance();
     Watchdog& watchdog = Watchdog::GetInstance();
+	ThreadManager& TM = ThreadManager::GetInstance();
+	
 
-    while (!watchdog.force_stop) {
-        unsigned char ch = std::getchar(); // Returns EOF on failure
-        if (ch == EOF) {
-            if (std::cin.eof()) {
-                std::cout << "End of input detected. Exiting...\n";
-               watchdog.StopMonitoring();
-            } else {
-                std::cerr << "Error reading input.\n";
-            }
-        } else {
-            //tty_char(&ch, 1); // Process the character through the TTY system
-            CMP.ProcessChar(ch);
-            watchdog.CheckIn();
-        }
+    while (!TM.force_stop) {
+		if (_kbhit()) {
+			unsigned char ch = _getch(); // Get the character without waiting. Returns EOF on failure
+			if (ch == EOF) {
+				if (std::cin.eof()) {
+					std::cout << "End of input detected. Exiting...\n";
+					TM.StopAllThreads();
+					break;
+				}
+				else {
+					std::cerr << "Error reading input.\n";
+				}
+			}
+			else {
+				//tty_char(&ch, 1); // Process the character through the TTY system
+				CMP.ProcessChar(ch);
+				watchdog.CheckIn();
+			}
+		}
+		_sleep(200); // Sleep for 200ms to avoid busy loop
     }
 }
 

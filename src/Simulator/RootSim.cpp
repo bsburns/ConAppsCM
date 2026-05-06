@@ -102,9 +102,10 @@ void RootSim::buildSimulatiomStructures() {
 
 void RootSim::simulation_thread() {
     Watchdog& watchdog = Watchdog::GetInstance();
+	ThreadManager& TM = ThreadManager::GetInstance();
 	running = true;
     // Main simulation loop
-    while (running && !watchdog.force_stop) {
+    while (running && !TM.force_stop) {
         // Process events, update device states, and interact with the scheduler
         if (Events.size() > 0) {
             // Process events in order of their scheduled time

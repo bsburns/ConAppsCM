@@ -1,6 +1,10 @@
 #pragma once
 /*------------------------------------------------------------------
  * Command Line Parser Header File
+ * 
+ * Provides a simple command line parser that allows defining commands 
+ * with associated descriptions, default values, and execution functions. 
+ * It supports both long and short command formats (e.g., --help and -h) and can handle commands that require arguments.
  *
  * April 2026, Barry S. Burns (B2)
  *
@@ -43,7 +47,7 @@ public:
 	}
 	bool HasValue() const { return hasValue; }
 	bool operator==(const std::string& cmdName) const {
-		if (ddashName.find(cmdName) != std::string::npos) return true;
+		if (ddashName.rfind(cmdName, 0) == 0) return true;
 		if (!sdashName.empty() && cmdName == sdashName) return true;
 		return false;
 		//return name == cmdName || (name.find(",") != std::string::npos && (name.substr(0, name.find(",")) == cmdName || name.substr(name.find(",") + 1) == cmdName));
@@ -79,6 +83,7 @@ public:
 	void ProcessArguments(int argc, char* argv[]) {
 		// Parse command line arguments and populate member variables
 		for (int i = 1; i < argc; ++i) {
+			bool matched = false;
 			std::string arg = argv[i];
 			for (const auto& cmd : commands) {
 				if (arg == cmd) {
@@ -93,26 +98,19 @@ public:
 							exit(200);
 						}
 					}
-					std::cout << "\nExecuting command: " << cmd.ddashName
+					std::cout << "\nExecuting command: " << arg << " matched_cmd=" << cmd.ddashName
 						<< " HasValue=" << hasValue << " Argument=" << arg2
 						<< "\n";
 					cmd.executeCommand(arg2);
+					matched = true;
+					break;
 				}
+			} // end for each command
+			if (!matched) {
+				std::cout << "\nUnknown command line argument: " << arg << "\n";
+				exit(100);
 			}
-			//if (arg == "--version") {
-			//	versionFlag = true;
-			//} else if (arg == "--help" || arg == "-h") {
-			//	helpFlag = true;
-			//} else if (arg == "--watchdog" && i + 1 < argc) {
-			//	watchdogTimeout = std::stod(argv[++i]);
-			//} else if ((arg == "--logfile" || arg == "-l") && i + 1 < argc) {
-			//	logFileName = argv[++i];
-			//} else if ((arg == "--testname" || arg == "-t") && i + 1 < argc) {
-			//	testName = argv[++i];
-			//} else if (arg == "--config" && i + 1 < argc) {
-			//	configFilePath = argv[++i];
-			//}
-		}
+		} // end for each argument
 	}
 
 	void SetDefaultValues() {

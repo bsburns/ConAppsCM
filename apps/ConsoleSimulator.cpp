@@ -20,6 +20,7 @@
 #include "logger.h"
 #include "watchdog.h"
 #include "commandLineParser.h"
+#include "threadManager.h"
 
 
 // namespace po = boost::program_options;
@@ -28,6 +29,7 @@ std::string TestName;
 
 int main(int argc, char* argv[])
 {
+	ThreadManager& TM = ThreadManager::GetInstance();
     LoggerVerbosity verbosity = LoggerVerbosity::CRITICAL;
     TestName = "default";
 	double WatchdogTimeout = 360;
@@ -73,45 +75,10 @@ int main(int argc, char* argv[])
 			}
         }, "360", typeid(double)),
         });
-	std::cout << "\nSetting DEFAULT command line arguments...\n";
+	std::cout << "\n** Setting DEFAULT command line arguments...**\n";
     CLP.SetDefaultValues();
-    std::cout << "\nParsing command line arguments...\n";
+    std::cout << "\n** Parsing command line arguments...**\n";
     CLP.ProcessArguments(argc, argv);
-    // po::options_description generic("Generic options");
-    // generic.add_options()
-    //     ("version", "print version string")
-    //     ("verbosity,v", po::value<std::string>(), "Logging verbsity level")
-    //     ("watchdog", po::value<double>()->default_value(360), "Watchdog timeout (seconds)")
-    //     ("logfile,l", po::value<std::string>(), "Specifies Log file name")
-    //     ("testname,t", po::value<std::string>(), "Specifies test name")
-    //     ("config", po::value<std::string>(), "Path to config file")
-    //     ("help,h", "produce help message")
-    //     ;
-
-    // po::options_description cmdline_options;
-    // cmdline_options.add(generic);
-
-    // po::variables_map vm;
-    // po::store(po::parse_command_line(argc, argv, cmdline_options), vm);
-    // po::notify(vm);
-
-
-
-
-    // // If config file specified, read it
-    // if (vm.count("config")) {
-    //     std::ifstream ifs(vm["config"].as<std::string>(), std::ifstream::in);
-    //     if (!ifs) {
-    //         std::cerr << "Cannot open config file: " << vm["config"].as<std::string>() << "\n";
-    //         return 1;
-    //     }
-
-    //     // Boost.Program_options ignores section headers like [database]
-    //     // You can preprocess the file to remove them if needed
-    //     po::store(po::parse_config_file(ifs, cmdline_options), vm);
-    //     po::notify(vm);
-    // }
-
 
     LOG_INST.SetLogFile(LogFile);
     LOG(verbosity, "Starting log");
@@ -123,21 +90,24 @@ int main(int argc, char* argv[])
     CMP.AddSubMenu(SimulationManager::GetInstance().GetCliMenu());
     CMP.AddSubMenu(Watchdog::GetInstance().cli_menu);
 
-    std::thread cli_thread(CliMenuProcessor::GetUserInput_thread);
+    //std::thread cli_thread(CliMenuProcessor::GetUserInput_thread);
+	TM.StartThread("CLIInput", CliMenuProcessor::GetUserInput_thread);
 
 	// Start WATCHDOG thread to monitor and adjust FEC stripes
     Watchdog& watchdog = Watchdog::GetInstance();
     // watchdog.SetTimeout(vm["watchdog"].as<double>());
     watchdog.SetTimeout(WatchdogTimeout);
-    std::thread watchdog_thread(Watchdog::monitor_thread);
+	TM.StartThread("WatchdogMonitor", Watchdog::monitor_thread);
+    //std::thread watchdog_thread(Watchdog::monitor_thread);
     
 
     // Wait for threads to join
     std::cout << "\nWaiting threads to join...\n";
-    watchdog_thread.join();
-    std::cout << "WATCHDOG THREAD COMPLETED...wait for cli thread\n";
-    cli_thread.join(); // Clean up thread resources
-    std::cout << "CLI THREAD COMPLETED\n";
+	TM.WaitAllThreads(); // Wait for all threads to finish
+    //watchdog_thread.join();
+    //std::cout << "WATCHDOG THREAD COMPLETED...wait for cli thread\n";
+    //cli_thread.join(); // Clean up thread resources
+    //std::cout << "CLI THREAD COMPLETED\n";
 
     std::cout << "\nExiting main thread...\n";
 }

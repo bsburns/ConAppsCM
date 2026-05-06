@@ -40,9 +40,8 @@ private:
 			.description = "Exit the program!!",
 			.valType = MenuItemValueTypes::NONE,
 			.executeCommand = [](MenuItemValueTypes vt, const std::string& argument) {
-				Watchdog::GetInstance().StopMonitoring();
+				ThreadManager::GetInstance().StopAllThreads();
 				std::cout << "\n\nRx Quit Command: Quiting the Program!\n";
-				exit(0);
 			},
 		},
 		{

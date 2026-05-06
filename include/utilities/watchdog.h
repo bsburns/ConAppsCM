@@ -15,11 +15,13 @@
 #include <thread>
 
 #include "logger.h"
+#include "threadManager.h"
 
 
 class Watchdog {
 private:
-	std::atomic<bool> activity{true};
+	std::atomic<bool> activity{ true };
+	std::atomic<bool> local_force_stop{ false };
 	double timeout_s = 10;
 
 	Watchdog() {
@@ -27,7 +29,6 @@ private:
 	}
 
 public:
-	std::atomic<bool> force_stop{false};
 	const MenuItem cli_menu =
     	{
 		.name = "watchdog",
@@ -66,9 +67,10 @@ public:
 		timeout_s = to;
 	}
 	static void monitor_thread() {
+		ThreadManager& TM = ThreadManager::GetInstance();
 		auto last_active_time = std::chrono::high_resolution_clock::now();
 		bool warning_issued = false;
-		while (!GetInstance().force_stop) {
+		while (!TM.force_stop && !GetInstance().local_force_stop) {
 			if (GetInstance().activity) {
 				GetInstance().activity = false;
 				warning_issued = false;
@@ -82,7 +84,7 @@ public:
 						std::cout<< "\n\nWatchdog Timer Expired with inactivity at " << deltaTime.count() << "\n";
 
 						// Force closing the program
-						std::terminate();
+						TM.StopAllThreads();
 						break;
 					}
 					if (!warning_issued) {
@@ -97,12 +99,11 @@ public:
 			//LOG(LoggerVerbosity::CRITICAL, std::format("Watchdog Timeout: activity={}", GetInstance().activity));
 			//std::cout << "\nWatchdog Timeout: activity=" << GetInstance().activity << "\n";
 		}
-		GetInstance().force_stop = true;
 	}
 
 	void StopMonitoring() {
 		// Stop the monitoring process and clean up resources.
-		force_stop = true;
+		local_force_stop = true;
 	}
 	void CheckIn() {
 		activity = true;
