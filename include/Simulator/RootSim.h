@@ -33,7 +33,7 @@ private:
     std::mutex mtx; // Mutex to protect access to configuration data
 	uint64_t currentTime_ns = 0; // Current simulation time in nanoseconds
     std::atomic<bool> running{ false };
-	std::thread simulationThread;
+	//std::thread simulationThread;
 
     void buildSimulatiomStructures();
     void simulation_thread();
@@ -60,7 +60,8 @@ public:
         }
         LOG(LoggerVerbosity::INFO, "Building Simulation structures...");
         buildSimulatiomStructures();
-		simulationThread = std::thread(&RootSim::simulation_thread, this);
+		ThreadManager::GetInstance().StartThread("SimulationThread", [this]() { this->simulation_thread(); });
+		//simulationThread = std::thread(&RootSim::simulation_thread, this);
 
         LOG(LoggerVerbosity::INFO, "Simulation started");
     }
@@ -69,9 +70,7 @@ public:
         if (running) {
             LOG(LoggerVerbosity::INFO, "Stopping simulation");
             running = false;
-            if (simulationThread.joinable()) {
-                simulationThread.join();
-            }
+            ThreadManager::GetInstance().StopThread("SimulationThread");
         }
 	}
 
