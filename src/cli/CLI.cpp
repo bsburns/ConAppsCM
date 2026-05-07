@@ -237,19 +237,30 @@ void CliMenuProcessor::GetUserInput_thread() {
 #elif __linux__
 
 #define ngetc(c) (read (0, (c), 1))
+#include <termios.h>
+#include <fcntl.h>
+#include <unistd.h>
 
+#if 0
 void CliMenuProcessor::GetUserInput_thread() {
-
     // Set up command line processor
-
 	auto& CMP = CliMenuProcessor::GetInstance();
     Watchdog& watchdog = Watchdog::GetInstance();
 	ThreadManager& TM = ThreadManager::GetInstance();
 
+	// setup Termios for non-blocking read of single characters from STDIN
+	struct termios oldt, newt;
+    tcgetattr(STDIN_FILENO, &oldt); // Save old settings
+    newt = oldt;
+    newt.c_lflag &= ~(ICANON | ECHO); // Disable buffering and echo
+    tcsetattr(STDIN_FILENO, TCSANOW, &newt);
+    
+    // Set STDIN to non-blocking mode
+    fcntl(STDIN_FILENO, F_SETFL, O_NONBLOCK); 
+
     while (!TM.force_stop) {
 		unsigned char ch;
-		auto ret = ngetc(&ch);
-		if (ret == 1) {
+		if (read(STDIN_FILENO, &ch, 1) > 0) { // Read a single character. Returns number of bytes read, or -1 on error
 			if (ch == EOF) {
 				if (std::cin.eof()) {
 					std::cout << "End of input detected. Exiting...\n";
@@ -260,15 +271,84 @@ void CliMenuProcessor::GetUserInput_thread() {
 				}
 			} else {
 				//tty_char(&ch, 1); // Process the character through the TTY system
+				// std::cout << "\nRead character: " << ch << " (" << (int)ch << ")\n"; // Debug output
+				std::cout << ch << std::flush; // Ensure character is printed before processing
+				CMP.ProcessChar(ch);
+				watchdog.CheckIn();
+			}
+		} else {
+			// std::cout << "\nsleep waiting for input...\n";
+			std::this_thread::sleep_for(std::ch	struct timeval timeout = {3, 0}; // 3 second timeout
+rono::milliseconds(200)); // Sleep for 200ms to avoid busy loop
+		}
+    }
+
+	tcsetattr(STDIN_FILENO, TCSANOW, &oldt); // Restore settings
+}
+#elseif 0
+#include <sys/select.h>
+void CliMenuProcessor::GetUserInput_thread() {
+    // Set up command line processor
+	auto& CMP = CliMenuProcessor::GetInstance();
+    Watchdog& watchdog = Watchdog::GetInstance();
+	ThreadManager& TM = ThreadManager::GetInstance();
+
+	struct timeval timeout = {3, 0}; // 3 second timeout
+	fd_set fds;
+	FD_ZERO(&fds);
+	FD_SET(STDIN_FILENO, &fds);
+    
+    while (!TM.force_stop) {
+		int ret = select(1, &fds, NULL, NULL, &timeout);
+		if (ret > 0 && FD_ISSET(STDIN_FILENO, &fds)) {
+			unsigned char ch = getchar();
+			if (ch == EOF) {
+				if (std::cin.eof()) {
+					std::cout << "End of input detected. Exiting...\n";
+					TM.StopAllThreads();
+					break;
+				} else {
+					std::cerr << "Error reading input.\n";
+				}
+			} else {
+				//tty_char(&ch, 1); // Process the character through the TTY system
+				// std::cout << "\nRead character: " << ch << " (" << (int)ch << ")\n"; // Debug output
+				std::cout << ch << std::flush; // Ensure character is printed before processing
 				CMP.ProcessChar(ch);
 				watchdog.CheckIn();
 			}
 		}
-		std::cout << "\nsleep waiting for input...\n";
-		std::this_thread::sleep_for(std::chrono::milliseconds(500)); // Sleep for 200ms to avoid busy loop
-    }
+	}
 }
-	
-#endif
+#else
+// Normal blocking read of characters. This is simpler but may not work well in all environments, especially if the input is buffered until a newline is entered.
+void CliMenuProcessor::GetUserInput_thread() {
+    // Set up command line processor
+	auto& CMP = CliMenuProcessor::GetInstance();
+    Watchdog& watchdog = Watchdog::GetInstance();
+	ThreadManager& TM = ThreadManager::GetInstance();
+
+    while (!TM.force_stop) {
+		unsigned char ch = getchar();
+		if (ch == EOF) {
+			if (std::cin.eof()) {
+				std::cout << "End of input detected. Exiting...\n";
+				TM.StopAllThreads();
+				break;
+			} else {
+				std::cerr << "Error reading input.\n";
+			}
+		} else {
+			//tty_char(&ch, 1); // Process the character through the TTY system
+			// std::cout << "\nRead character: " << ch << " (" << (int)ch << ")\n"; // Debug output
+			std::cout << ch << std::flush; // Ensure character is printed before processing
+			CMP.ProcessChar(ch);
+			watchdog.CheckIn();
+		}
+	}
+}
+
+#endif  // Different versions of GetUserInput_thread for testing. The one above is the most robust and handles edge cases better, but the one below is simpler and may work better in some environments.
+#endif // End of platform-specific code
 
 void stooges() { std::cout << "\n\nHey Moe, it dont woik. NYUK NYUK NYUK NYUK *bop* Owww!\n";}

@@ -15,7 +15,7 @@
 // #include <boost/program_options.hpp>
 
 
-#include "Simulator/RootSim.h"
+#include "RootSim.h"
 #include "cli/CLI.h"
 #include "logger.h"
 #include "watchdog.h"
