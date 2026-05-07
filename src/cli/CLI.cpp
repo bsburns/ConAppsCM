@@ -11,7 +11,11 @@
 #include <string>
 #include <atomic>
 #include <cstdio>
+
+#ifdef _WIN32
 #include <conio.h> // For _kbhit() and _getch()
+#elif __linux__
+#endif
 
 #include "CLI.h"
 #include "CliMenu.h"
@@ -197,6 +201,8 @@ void CliMenuProcessor::ProcessChar(unsigned char ch) {
 };
 
 
+#ifdef _WIN32
+
 void CliMenuProcessor::GetUserInput_thread() {
 
     // Set up command line processor
@@ -204,7 +210,6 @@ void CliMenuProcessor::GetUserInput_thread() {
 	auto& CMP = CliMenuProcessor::GetInstance();
     Watchdog& watchdog = Watchdog::GetInstance();
 	ThreadManager& TM = ThreadManager::GetInstance();
-	
 
     while (!TM.force_stop) {
 		if (_kbhit()) {
@@ -225,8 +230,45 @@ void CliMenuProcessor::GetUserInput_thread() {
 				watchdog.CheckIn();
 			}
 		}
-		_sleep(200); // Sleep for 200ms to avoid busy loop
+		std::this_thread::sleep_for(std::chrono::milliseconds(200)); // Sleep for 200ms to avoid busy loop
     }
 }
+
+#elif __linux__
+
+#define ngetc(c) (read (0, (c), 1))
+
+void CliMenuProcessor::GetUserInput_thread() {
+
+    // Set up command line processor
+
+	auto& CMP = CliMenuProcessor::GetInstance();
+    Watchdog& watchdog = Watchdog::GetInstance();
+	ThreadManager& TM = ThreadManager::GetInstance();
+
+    while (!TM.force_stop) {
+		unsigned char ch;
+		auto ret = ngetc(&ch);
+		if (ret == 1) {
+			if (ch == EOF) {
+				if (std::cin.eof()) {
+					std::cout << "End of input detected. Exiting...\n";
+					TM.StopAllThreads();
+					break;
+				} else {
+					std::cerr << "Error reading input.\n";
+				}
+			} else {
+				//tty_char(&ch, 1); // Process the character through the TTY system
+				CMP.ProcessChar(ch);
+				watchdog.CheckIn();
+			}
+		}
+		std::cout << "\nsleep waiting for input...\n";
+		std::this_thread::sleep_for(std::chrono::milliseconds(500)); // Sleep for 200ms to avoid busy loop
+    }
+}
+	
+#endif
 
 void stooges() { std::cout << "\n\nHey Moe, it dont woik. NYUK NYUK NYUK NYUK *bop* Owww!\n";}
