@@ -212,25 +212,21 @@ void CliMenuProcessor::GetUserInput_thread() {
 	ThreadManager& TM = ThreadManager::GetInstance();
 
     while (!TM.force_stop) {
-		if (_kbhit()) {
-			unsigned char ch = _getch(); // Get the character without waiting. Returns EOF on failure
-			if (ch == EOF) {
-				if (std::cin.eof()) {
-					std::cout << "End of input detected. Exiting...\n";
-					TM.StopAllThreads();
-					break;
-				}
-				else {
-					std::cerr << "Error reading input.\n";
-				}
+		unsigned char ch = std::getchar(); // Get the character without waiting. Returns EOF on failure
+		if (ch == EOF) {
+			if (std::cin.eof()) {
+				std::cout << "End of input detected. Exiting...\n";
+				TM.StopAllThreads();
+				break;
 			}
 			else {
-				//tty_char(&ch, 1); // Process the character through the TTY system
-				CMP.ProcessChar(ch);
-				watchdog.CheckIn();
+				std::cerr << "Error reading input.\n";
 			}
 		}
-		std::this_thread::sleep_for(std::chrono::milliseconds(200)); // Sleep for 200ms to avoid busy loop
+		else {
+			CMP.ProcessChar(ch);
+			watchdog.CheckIn();
+		}
     }
 }
 
