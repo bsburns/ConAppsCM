@@ -59,36 +59,35 @@ private:
 			.executeCommand = [this](MenuItemValueTypes vt, const std::string& argument) {
 				if (argument == "all") {
 					this->Help(true);
+				} else {
+				    this->Help();
 				}
- else {
-  this->Help();
-}
-}
-},
-{
-.name = "history",
-.description = "Show command history",
-.subMenus = {
-	{
-	.name = "purge",
-	.description = "Purge command history",
-	.subMenus = {},
-	.valType = MenuItemValueTypes::NONE,
-	.executeCommand = [this](MenuItemValueTypes vt, const std::string& argument) {this->commandHistory.clear(); },
-	},
-},
-.valType = MenuItemValueTypes::ANY,
-.executeCommand = [this](MenuItemValueTypes vt, const std::string& argument)
-	{
-		std::cout << "\nCommand History:";
-		int i = 0;
-		for (auto& cmd : commandHistory) {
-			std::cout << "\n[" << i++ << "] : " << cmd;
+			}
+		},
+		{
+			.name = "history",
+			.description = "Show command history",
+			.subMenus = {
+				{
+				.name = "purge",
+				.description = "Purge command history",
+				.subMenus = {},
+				.valType = MenuItemValueTypes::NONE,
+				.executeCommand = [this](MenuItemValueTypes vt, const std::string& argument) {this->commandHistory.clear(); },
+				},
+			},
+			.valType = MenuItemValueTypes::ANY,
+			.executeCommand = [this](MenuItemValueTypes vt, const std::string& argument)
+				{
+					std::cout << "\nCommand History:";
+					int i = 0;
+					for (auto& cmd : commandHistory) {
+						std::cout << "\n[" << i++ << "] : " << cmd;
+					}
+				},
 		}
 	},
-}
-},
-.valType = MenuItemValueTypes::SUBMENU,
+	.valType = MenuItemValueTypes::SUBMENU,
 	};
 
 
