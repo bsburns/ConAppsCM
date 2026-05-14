@@ -1,2 +1,4 @@
 
 add_subdirectory(ConsoleSimulator)
+add_subdirectory(UDPServer)
+add_subdirectory(UDPClient)
