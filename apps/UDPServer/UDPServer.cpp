@@ -71,13 +71,17 @@ int main() {
     n = recvfrom(sockfd, (char*)buffer, MAXLINE,
         MSG_WAITALL, (struct sockaddr*)&cliaddr,
         &len);
-    buffer[n] = '\0';
-    printf("Client : %s\n", buffer);
-    sendto(sockfd, (const char*)hello, strlen(hello),
-        MSG_CONFIRM, (const struct sockaddr*)&cliaddr,
-        len);
-    std::cout << "Hello message sent." << std::endl;
-
+    if (n > 0) {
+        buffer[n] = '\0';
+        printf("Client : %s\n", buffer);
+        sendto(sockfd, (const char*)hello, strlen(hello),
+            MSG_CONFIRM, (const struct sockaddr*)&cliaddr,
+            len);
+        std::cout << "Hello message sent." << std::endl;
+    }
+    else {
+        std::cout << "Receive from socket failed!!\n";
+    }
 #ifdef _WIN32
     WSACleanup();
 #endif
