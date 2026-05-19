@@ -15,6 +15,7 @@ git push -u origin main
 If you haven't configured git on the system:
 ```bash
 git config --global user.email "barry.s.burns@gmail.com"
+git config --global user.name "Barry S. Burns"
 ```
 
 ## Pulling Repo
