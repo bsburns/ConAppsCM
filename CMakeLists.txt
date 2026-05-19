@@ -14,6 +14,10 @@ execute_process(
 # Pass the hash to your C++ code as a macro
 add_definitions("-DGIT_HASH=\"${GIT_HASH}\"")
 
+# Execute the shell command 'hostname' and save it to a CMake variable
+execute_process(COMMAND hostname OUTPUT_VARIABLE BUILD_MACHINE OUTPUT_STRIP_TRAILING_WHITESPACE)
+# Pass that variable as a preprocessor definition to your C++ code
+add_definitions("-DBUILD_MACHINE=\"${BUILD_MACHINE}\"")
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)

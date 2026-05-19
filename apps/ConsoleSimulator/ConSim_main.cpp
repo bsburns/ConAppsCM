@@ -32,6 +32,8 @@ void show_version() {
     std::cout << "Console Simulator Version: " << VERSION << "." << GIT_HASH << std::endl;
     std::cout << "Build Date: " << __DATE__ << std::endl;
     std::cout << "Build Time: " << __TIME__ << std::endl;
+    std::cout << "Compiler: " << __VERSION__ << std::endl;
+    std::cout << "Build Machine: " << BUILD_MACHINE << std::endl;
 }
 
 int main(int argc, char* argv[])
