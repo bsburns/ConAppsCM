@@ -32,7 +32,11 @@ void show_version() {
     std::cout << "Console Simulator Version: " << VERSION << "." << GIT_HASH << std::endl;
     std::cout << "Build Date: " << __DATE__ << std::endl;
     std::cout << "Build Time: " << __TIME__ << std::endl;
+#ifdef _WIN32
+    std::cout << "MSVC Version: " << _MSC_FULL_VER << std::endl;
+#else
     std::cout << "Compiler: " << __VERSION__ << std::endl;
+#endif
     std::cout << "Build Machine: " << BUILD_MACHINE << std::endl;
 }
 
