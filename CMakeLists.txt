@@ -3,6 +3,18 @@ project(ConsoleApplications)
 
 #find_package(nlohmann_json REQUIRED)
 
+# Get the latest abbreviated commit hash
+execute_process(
+  COMMAND git rev-parse --short HEAD
+  WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
+  OUTPUT_VARIABLE GIT_HASH
+  OUTPUT_STRIP_TRAILING_WHITESPACE
+)
+
+# Pass the hash to your C++ code as a macro
+add_definitions("-DGIT_HASH=\"${GIT_HASH}\"")
+
+
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)

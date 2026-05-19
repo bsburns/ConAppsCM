@@ -26,6 +26,13 @@
 // namespace po = boost::program_options;
 
 std::string TestName;
+#define VERSION "0.1"
+
+void show_version() {
+    std::cout << "Console Simulator Version: " << VERSION << "." << GIT_HASH << std::endl;
+    std::cout << "Build Date: " << __DATE__ << std::endl;
+    std::cout << "Build Time: " << __TIME__ << std::endl;
+}
 
 int main(int argc, char* argv[])
 {
@@ -38,8 +45,9 @@ int main(int argc, char* argv[])
     CommandLineParser CLP;
     CLP.AddCommand({
         CLP_Command("version", "Show version information", [](const std::string& argument) {
-            std::cout << "Console Simulator Version: 1.0.0.2\n";
-        }),
+            show_version();
+            exit(0);
+        }, "", typeid(void)),
         CLP_Command("verbosity,v", "Set logging verbosity level", [&verbosity](const std::string& argument) {
             std::string uarg = argument;
             std::transform(uarg.begin(), uarg.end(), uarg.begin(), ::toupper);
@@ -75,7 +83,9 @@ int main(int argc, char* argv[])
 			}
         }, "360", typeid(double)),
         });
-	std::cout << "\n** Setting DEFAULT command line arguments...**\n";
+
+    show_version();
+    std::cout << "\n** Setting DEFAULT command line arguments...**\n";
     CLP.SetDefaultValues();
     std::cout << "\n** Parsing command line arguments...**\n";
     CLP.ProcessArguments(argc, argv);
@@ -83,6 +93,7 @@ int main(int argc, char* argv[])
     LOG_INST.SetLogFile(LogFile);
     LOG(verbosity, "Starting log");
 
+    
 	// Start CLI input thread
 	auto& CMP = CliMenuProcessor::GetInstance();
 	CMP.SetPrompt("ConsoleSim> ");
