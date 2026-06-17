@@ -18,6 +18,8 @@
 #include "Devices.h"
 #include "DevScheduler.h"
 
+using namespace my_logger;
+
 class RootSim {
 private:
 	std::map<int, std::shared_ptr<DeviceBase>> Devices; // Map of device ID to device instance

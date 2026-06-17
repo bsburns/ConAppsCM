@@ -1,6 +1,11 @@
 
 # Find the Boost package (headers are implicitly required)
+if (WIN32)
+    set(Boost_DIR "C:\\local\\boost_1_91_0\\bin\\x64\\lib\\cmake\\Boost-1.91.0")
+endif()
 find_package(Boost REQUIRED)
+# Include Boost headers
+#include_directories(${Boost_INCLUDE_DIRS})
 
 add_executable(bUDPS bUDP-Server.cpp)
 

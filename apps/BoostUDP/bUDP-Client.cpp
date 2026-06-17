@@ -7,6 +7,7 @@
  *
  *------------------------------------------------------------------
  */
+#include "logger.h"
 #include <iostream>
 #include <string>
 #include <array>
@@ -15,7 +16,6 @@
 using boost::asio::ip::udp;
 
 #include "commandLineParser.h"
-#include "logger.h"
 #include "watchdog.h"
 #include "PacketHeader.h"
 
@@ -32,6 +32,8 @@ void show_version() {
 #endif
     std::cout << "Build Machine: " << BUILD_MACHINE << std::endl;
 }
+
+using namespace my_logger;
 
 int main(int argc, char* argv[]) {
     LoggerVerbosity verbosity = LoggerVerbosity::CRITICAL;

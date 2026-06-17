@@ -72,3 +72,26 @@ cd GitRepos/
 rsync -azv <repoName> e453331@192.168.1.11:~/GitRepos/<repoName>
 
 ```
+# Install Boost
+## Linux
+```bash
+sudo apt update
+sudo apt install libboost-all-dev
+```
+## Windows
+- Download boost from https://www.boost.org/users/download/
+- Unzip to C:\local
+```bash
+cd C:\local\boost_1_91_0\
+.\bootstrap.bat"
+.\b2 --build-dir=build\x86 address-model=32 threading=multi --stagedir=.\bin\x86 --toolset=msvc -j 16 link=static,shared runtime-link=static,shared --variant=debug,release
+.\b2 --build-dir=build\x64 address-model=64 threading=multi --stagedir=.\bin\x64 --toolset=msvc -j 8 link=static,shared runtime-link=static,shared --variant=debug,release
+```
+- Add to CMakeLists.txt
+```cmake
+if (WIN32)
+    set(Boost_DIR "C:\\local\\boost_1_91_0\\bin\\x64\\lib\\cmake\\Boost-1.91.0")
+endif()
+find_package(Boost REQUIRED)
+```
+- There is some issue with looger.h and boost log. I had to move include of logger.h to files with boost include files to get it to compile:

@@ -10,7 +10,7 @@
  */
 #include "DevOutput.h"
 
-
+using namespace my_logger;
 DeviceOutputBase::DeviceOutputBase(
     const std::string& name, 
     const OutputConfig& config, 
