@@ -13,11 +13,12 @@
 #include <array>
 #include <boost/asio.hpp>
 
-using boost::asio::ip::udp;
 
 #include "commandLineParser.h"
 #include "watchdog.h"
 #include "PacketHeader.h"
+
+static const std::size_t CHUNK_SIZE = 1024; // safe UDP payload
 
 #define VERSION "0.1"
 
@@ -34,13 +35,23 @@ void show_version() {
 }
 
 using namespace my_logger;
+using boost::asio::ip::udp;
+
+enum class UdpSendMode : int {
+    NOTSET = 0,
+    MESSAGE = 1,
+    SEND_FILE = 2
+};
 
 int main(int argc, char* argv[]) {
     LoggerVerbosity verbosity = LoggerVerbosity::CRITICAL;
 	double WatchdogTimeout = 360;
     std::string LogFile;
+    std::string SendFile;
     std::string ServerPort = "8080";
     std::string ServerIP = "127.0.0.1";
+	bool interactiveMode = false;
+	UdpSendMode sendMode = UdpSendMode::MESSAGE;
 
     CommandLineParser CLP;
     CLP.AddCommand({
@@ -66,13 +77,20 @@ int main(int argc, char* argv[]) {
 				<< " argumnet=" << argument
                 << "\n";
         }, "CRITICAL", typeid(std::string)),
+        CLP_Command("sendfile, f", "Specifies file name to send", [&SendFile, &sendMode](const std::string& argument) {
+            SendFile = argument;
+            sendMode = UdpSendMode::SEND_FILE;
+        }, "", typeid(std::string)),
         CLP_Command("logfile, l", "Specifies Log file name", [&LogFile](const std::string& argument) {
             LogFile = argument;
         }, "bUDPC.log", typeid(std::string)),
         CLP_Command("server_port, p", "Specifies UDP Port number of server", [&ServerPort](const std::string& argument) {
             ServerPort = argument;
         }, "8080", typeid(std::string)),
-        CLP_Command("server_ip, i", "Specifies IP address of server", [&ServerIP](const std::string& argument) {
+        CLP_Command("interactive, i", "Allows multiple Messages to be sent from client", [&interactiveMode](const std::string& argument) {
+            interactiveMode = true;
+        }, "", typeid(void)),
+        CLP_Command("server_ip,s", "Specifies IP address of server", [&ServerIP](const std::string& argument) {
             ServerIP = argument;
         }, "127.0.0.1", typeid(std::string)),
         });
@@ -100,22 +118,55 @@ int main(int argc, char* argv[]) {
         socket.open(udp::v4());
         LOG(LoggerVerbosity::INFO, "Socket opened to " + ServerIP + ":" + ServerPort);
 
-        // 4. Send a message to the remote endpoint
-        std::string message = "Hello from Synchronous bUDP Client!";
-        socket.send_to(boost::asio::buffer(message), receiver_endpoint);
-        std::cout << "Message sent cleanly." << std::endl;
+        if (sendMode == UdpSendMode::SEND_FILE) {
+            LOG(LoggerVerbosity::INFO, "Sending file: " + SendFile);
+            std::string message = "FILE_MODE: " + SendFile;
+            socket.send_to(boost::asio::buffer(message), receiver_endpoint);
+            std::cout << "Message sent cleanly." << std::endl;
+        }
+        else {
+            // 4. Send a message to the remote endpoint
+            std::string message = "Hello from Synchronous bUDP Client!";
+            socket.send_to(boost::asio::buffer(message), receiver_endpoint);
+            std::cout << "Message sent cleanly." << std::endl;
 
-        // 5. Prepare a buffer to receive the reply back
-        std::array<char, 1024> recv_buf;
-        udp::endpoint sender_endpoint;
-        
-        // This blocks until data arrives
-        size_t len = socket.receive_from(boost::asio::buffer(recv_buf), sender_endpoint);
+            // 5. Prepare a buffer to receive the reply back
+            std::array<char, 1024> recv_buf;
+            udp::endpoint sender_endpoint;
 
-        std::cout << "Received reply: ";
-        std::cout.write(recv_buf.data(), len);
-        std::cout << std::endl;
+            // This blocks until data arrives
+            size_t len = socket.receive_from(boost::asio::buffer(recv_buf), sender_endpoint);
 
+            std::cout << "Received reply: ";
+            std::cout.write(recv_buf.data(), len);
+            std::cout << std::endl;
+            if (interactiveMode) {
+                std::string input;
+                while (true) {
+                    std::cout << "Enter message to send (or 'exit' to quit): ";
+                    std::getline(std::cin, input);
+                    if (input == "exit") {
+                        break;
+                    }
+                    socket.send_to(boost::asio::buffer(input), receiver_endpoint);
+                    std::cout << "Message sent cleanly." << std::endl;
+
+                    std::array<char, 1024> recv_buf;
+                    udp::endpoint sender_endpoint;
+
+                    // This blocks until data arrives
+                    size_t len = socket.receive_from(boost::asio::buffer(recv_buf), sender_endpoint);
+
+                    std::cout << "Received reply: ";
+                    std::cout.write(recv_buf.data(), len);
+                    std::cout << std::endl;
+
+                }
+            }
+            else {
+                LOG(LoggerVerbosity::INFO, "Not in interactive mode, exiting after one message.");
+            }
+        }
     } catch (std::exception& e) {
         std::cerr << "Exception: " << e.what() << std::endl;
     }

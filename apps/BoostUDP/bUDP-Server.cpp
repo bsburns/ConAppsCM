@@ -34,6 +34,9 @@ private:
         // Register the client endpoint if it's new
         if (known_clients_.insert(remote_endpoint_).second) {
             std::cout << "[New Client Connected] " << remote_endpoint_ << std::endl;
+            if (message.compare(0, 8, "FILE_MODE:")==0) {
+                std::cout << "New client is in " << message << std::endl;
+            }
         }
 
         std::cout << "[Received from " << remote_endpoint_ << "]: " << message << std::endl;
