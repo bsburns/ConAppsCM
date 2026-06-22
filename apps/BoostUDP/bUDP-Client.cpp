@@ -17,10 +17,8 @@
 #include "commandLineParser.h"
 #include "watchdog.h"
 #include "PacketHeader.h"
+#include "bUDP.h"
 
-static const std::size_t CHUNK_SIZE = 1024; // safe UDP payload
-
-#define VERSION "0.1"
 
 void show_version() {
     std::cout << "UDP Client (boost) Version: " << VERSION << "." << GIT_HASH << std::endl;
@@ -37,11 +35,6 @@ void show_version() {
 using namespace my_logger;
 using boost::asio::ip::udp;
 
-enum class UdpSendMode : int {
-    NOTSET = 0,
-    MESSAGE = 1,
-    SEND_FILE = 2
-};
 
 int main(int argc, char* argv[]) {
     LoggerVerbosity verbosity = LoggerVerbosity::CRITICAL;
@@ -102,7 +95,7 @@ int main(int argc, char* argv[]) {
     CLP.ProcessArguments(argc, argv);
 
     LOG_INST.SetLogFile(LogFile);
-    LOG(verbosity, "Starting log");
+    LOG(verbosity, "Starting log\n");
 
     try {
         // 1. Every Asio program needs an io_context object
@@ -122,9 +115,42 @@ int main(int argc, char* argv[]) {
             LOG(LoggerVerbosity::INFO, "Sending file: " + SendFile);
             std::string message = "FILE_MODE: " + SendFile;
             socket.send_to(boost::asio::buffer(message), receiver_endpoint);
-            std::cout << "Message sent cleanly." << std::endl;
-        }
-        else {
+
+            FileTransferHeader fh;
+			auto FTHS = fh.GetHeaderSizeBytes();
+
+            std::vector<char> buffer(CHUNK_SIZE+ FTHS);
+            size_t total_bytes_sent = 0;
+
+            // Open file in binary mode
+            std::ifstream file(SendFile, std::ios::binary);
+            if (!file) {
+                std::cerr << "Error: Cannot open file " << SendFile << "\n";
+                return 1;
+            }
+            while (file) {
+				file.read(buffer.data() + FTHS, CHUNK_SIZE - FTHS);
+                std::streamsize bytes_read = file.gcount();
+                if (bytes_read > 0) {
+					fh.chunkSize = static_cast<uint16_t>(bytes_read);
+					std::vector<uint8_t> headerData = fh.serialize();
+					std::copy(headerData.begin(), headerData.end(), buffer.begin());    
+                    size_t bytes_sent = socket.send_to(boost::asio::buffer(buffer.data(), bytes_read + FTHS), receiver_endpoint);
+                    total_bytes_sent += bytes_sent;
+                    LOG(LoggerVerbosity::INFO, "Send file: bytes_sent=" + std::to_string(bytes_sent) +
+                    " total_bytes_sent=" + std::to_string(total_bytes_sent) +
+                    " bytes_read=" + std::to_string(bytes_read));
+                    fh.chunkNumber++;
+                }
+            }
+            // Send an empty packet to indicate EOF
+			fh.chunkSize = 0;
+            socket.send_to(boost::asio::buffer(fh.serialize(), FTHS), receiver_endpoint);
+
+            LOG(LoggerVerbosity::INFO, "File sent successfully. Total bytes: " + 
+                std::to_string(total_bytes_sent));
+
+        } else {
             // 4. Send a message to the remote endpoint
             std::string message = "Hello from Synchronous bUDP Client!";
             socket.send_to(boost::asio::buffer(message), receiver_endpoint);

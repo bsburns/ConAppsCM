@@ -198,7 +198,7 @@ namespace my_logger {
 				log_file.close();
 			}
 			log_filename.clear();
-			std::cout << "\nLog file closed.\n";
+			//std::cout << "\nLog file closed.\n";
 		}
 
 		bool IsLogFileOpen() const {
