@@ -261,3 +261,13 @@ public:
 
 
 };
+
+class Packet {
+public:
+	std::vector<PacketHeaderBase> headers;
+	std::vector<uint8_t> data;
+	Packet() {
+		headers.clear();
+		data.clear();
+	}
+};

@@ -1,0 +1,15 @@
+{
+    "schedulerCfg": {
+        "MaxNumberStripes": 10,
+        "MinNumberStripes": 1,
+        "Mode": "DYNAMIC_STRIPES",
+        "RevaluationInterval_ns": 100
+    },
+    "stripeCfg": {
+        "AbsMaxPacketRate_pps": 0.0,
+        "MinPacketRate_pps": 0.0,
+        "Mode": "NONE",
+        "Parm_D_rows": 100,
+        "Parm_L_cols": 5
+    }
+}

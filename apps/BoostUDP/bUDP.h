@@ -2,7 +2,7 @@
 /*------------------------------------------------------------------
  * bUDP.h
  *
- * Boost based UDP vommon header
+ * Boost based UDP common header
  *
  * June 2026, Barry S. Burns (B2)
  *

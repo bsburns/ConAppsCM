@@ -109,6 +109,8 @@ namespace my_logger {
 			CloseLogFile();
 		}
 
+		LoggerVerbosity GetVerbosity() { return verbosity;  }
+
 		static MyLogger& GetInstance() {
 			static MyLogger instance; // Guaranteed to be destroyed and instantiated on first use
 			return instance;
@@ -184,7 +186,7 @@ namespace my_logger {
 			}
 			log_filename = filename;
 			lock.unlock();
-			Log(LoggerVerbosity::CRITICAL, std::format("Opening log file={}", log_filename));
+			Log(LoggerVerbosity::INFO, std::format("Opening log file={}", log_filename));
 			return 0;
 		}
 
@@ -192,7 +194,7 @@ namespace my_logger {
 			std::unique_lock<std::mutex> lock(mtx);
 			if (log_file.is_open()) {
 				lock.unlock();
-				Log(LoggerVerbosity::CRITICAL, std::format("Closing log file={}", log_filename));
+				Log(LoggerVerbosity::INFO, std::format("Closing log file={}", log_filename));
 				lock.lock();
 				log_file.flush();
 				log_file.close();
