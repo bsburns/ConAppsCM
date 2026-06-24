@@ -59,12 +59,12 @@ void RootSim::buildSimulatiomStructures() {
         schedBasePtr = std::make_shared<DeviceSchedulerAffinity>("STREAM_AFFINITY_SCHED", schedCfg, &rootStats);
         break;
     default:
-        LOG(LoggerVerbosity::ERROR, std::format("Unknown Scheduler mode!! mode={}", std::string(magic_enum::enum_name(schedCfg.Mode))));
+        LOG(LoggerVerbosity::ERR, std::format("Unknown Scheduler mode!! mode={}", std::string(magic_enum::enum_name(schedCfg.Mode))));
         return;
     }
     devBasePtr = schedBasePtr;
     if (devBasePtr == nullptr) {
-        LOG(LoggerVerbosity::ERROR, std::format("Scheduler device was not created!! mode={}", std::string(magic_enum::enum_name(schedCfg.Mode))));
+        LOG(LoggerVerbosity::ERR, std::format("Scheduler device was not created!! mode={}", std::string(magic_enum::enum_name(schedCfg.Mode))));
         return;
     }
     auto SchedID = schedBasePtr->GetDeviceID();
@@ -126,7 +126,7 @@ void RootSim::simulation_thread() {
 
                 auto dev_it = Devices.find(dev);
                 if (dev_it == Devices.end()) {
-                    LOG(LoggerVerbosity::ERROR, std::format("SimThread: Events device ID does not exist: devId={}, evt={}", dev, event->ToStringBase()));
+                    LOG(LoggerVerbosity::ERR, std::format("SimThread: Events device ID does not exist: devId={}, evt={}", dev, event->ToStringBase()));
                 } else {
                     LOG(LoggerVerbosity::DEBUG, std::format("Processing Event: {}", event->ToStringBase()));
                     dev_it->second->ExecuteEvent(event);

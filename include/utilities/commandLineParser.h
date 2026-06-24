@@ -98,9 +98,9 @@ public:
 							exit(200);
 						}
 					}
-					std::cout << "\nExecuting command: " << arg << " matched_cmd=" << cmd.ddashName
-						<< " HasValue=" << hasValue << " Argument=" << arg2
-						<< "\n";
+					//std::cout << "\nExecuting command: " << arg << " matched_cmd=" << cmd.ddashName
+					//	<< " HasValue=" << hasValue << " Argument=" << arg2
+					//	<< "\n";
 					cmd.executeCommand(arg2);
 					matched = true;
 					break;

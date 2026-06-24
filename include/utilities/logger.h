@@ -22,23 +22,23 @@
 #include "magic_enum.hpp"
 #include "cli/CliMenu.h"
 
-#define LOG_INST MyLogger::GetInstance()
+#define LOG_INST my_logger::MyLogger::GetInstance()
 #define LOG LOG_INST.Log
 
 namespace my_logger {
-	enum class LoggerVerbosity : int {
-		NOTSET = 0,
-		DEBUG = 10,
-		INFO = 20,
-		WARNING = 30,
-		ERROR = 40,
-		CRITICAL = 50
-	};
+enum class LoggerVerbosity : int {
+	NOTSET = 0,
+	DEBUG = 10,
+	INFO = 20,
+	WARNING = 30,
+	ERR = 40, // rename ERROR to ERR to avoid conflict with Windows ERROR macro
+	CRITICAL = 50
+};
 
 	//constexpr std::string_view to_string(LoggerVerbosity v) { 
 	//	switch (v) {
 	//	case LoggerVerbosity::CRITICAL: return "CRITICAL";
-	//	case LoggerVerbosity::ERROR: return "ERROR";
+	//	case LoggerVerbosity::ERR: return "ERR";
 	//	case LoggerVerbosity::WARNING: return "WARNING";
 	//	case LoggerVerbosity::INFO: return "INFO";
 	//	case LoggerVerbosity::DEBUG: return "DEBUG";
@@ -54,12 +54,14 @@ namespace my_logger {
 		std::mutex mtx; // Mutex to protect access to configuration data
 		std::chrono::time_point<std::chrono::system_clock> last_log_time;
 		bool console_logging_enabled = true;
+		std::string preamble = "";
+
 		MyLogger() {
 			last_log_time = std::chrono::system_clock::now();
 			SetLogFile("default.log");
 		}
 	public:
-		LoggerVerbosity verbosity = LoggerVerbosity::DEBUG;
+		LoggerVerbosity verbosity = LoggerVerbosity::ERR;
 		std::string	log_filename;
 		std::ofstream log_file;
 		const MenuItem cli_menu = {
@@ -116,6 +118,19 @@ namespace my_logger {
 			return instance;
 		}
 
+		std::string GetLogLevelNames() {
+			std::string names_str ="[";
+			auto names = magic_enum::enum_names<LoggerVerbosity>();
+			for (auto it = names.begin(); it != names.end(); ++it) {
+				std::string name = std::string(*it);
+				names_str += name;
+				LoggerVerbosity value = magic_enum::enum_cast<LoggerVerbosity>(name).value_or(LoggerVerbosity::NOTSET);
+				names_str += "(" + std::to_string((int)value) + ")";
+				if (std::next(it) != names.end()) names_str += ", ";
+			}
+			names_str += "]";
+			return names_str;
+		}
 		void SetConsole(const std::string& arg) {
 			if (arg.empty()) {
 				std::cout << "\nConsole logging is currently turned " << (console_logging_enabled ? "ON" : "OFF") << "\n";
@@ -186,7 +201,8 @@ namespace my_logger {
 			}
 			log_filename = filename;
 			lock.unlock();
-			Log(LoggerVerbosity::INFO, std::format("Opening log file={}", log_filename));
+			Log(LoggerVerbosity::DEBUG, std::format("Opening log file={} v={}", log_filename, 
+				std::string(magic_enum::enum_name(verbosity))));
 			return 0;
 		}
 
@@ -194,7 +210,7 @@ namespace my_logger {
 			std::unique_lock<std::mutex> lock(mtx);
 			if (log_file.is_open()) {
 				lock.unlock();
-				Log(LoggerVerbosity::INFO, std::format("Closing log file={}", log_filename));
+				Log(LoggerVerbosity::DEBUG, std::format("Closing log file={}", log_filename));
 				lock.lock();
 				log_file.flush();
 				log_file.close();
@@ -205,6 +221,11 @@ namespace my_logger {
 
 		bool IsLogFileOpen() const {
 			return log_file.is_open();
+		}
+
+		void SetPreamble(const std::string& preamble_str) {
+			std::lock_guard<std::mutex> lock(mtx);
+			preamble = preamble_str;
 		}
 
 		void Log(LoggerVerbosity v, std::string msg, const std::source_location location = std::source_location::current()) {
@@ -235,8 +256,9 @@ namespace my_logger {
 				std::string short_name = std::filesystem::path(location.file_name()).filename().string();
 				std::stringstream ss;
 				ss << std::endl << td << lvl << ": "
-					<< short_name << " @ " << location.line() << ": "
-					<< msg;
+					<< short_name << " @ " << location.line() << ": ";
+				if (!preamble.empty()) ss << "[" << preamble << "]: ";
+				ss << msg;
 				if (console_logging_enabled) std::cout << ss.str();
 				if (log_file.is_open()) {
 					log_file << ss.str();

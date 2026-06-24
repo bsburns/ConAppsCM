@@ -50,7 +50,7 @@ void DeviceStripeBase::ExecuteEvent(std::shared_ptr<EventBase> event) {
             DeviceBase::simMgr.ScheduleEvent(event);
             StatsTxPackets.addValue(pktEvt->packet_length);
         } else {
-            LOG(LoggerVerbosity::ERROR, std::format("{}: Unable to cast event to EventPacket: evt={}", GetDeviceName(), event->ToStringBase()));
+            LOG(LoggerVerbosity::ERR, std::format("{}: Unable to cast event to EventPacket: evt={}", GetDeviceName(), event->ToStringBase()));
         }
     }
 }
@@ -78,7 +78,7 @@ void DeviceStripeNominal::ExecuteEvent(std::shared_ptr<EventBase> event) {
             DeviceBase::simMgr.ScheduleEvent(event);
 
         } else {
-            LOG(LoggerVerbosity::ERROR, std::format("{}: Unable to cast event to EventPacket: evt={}", GetDeviceName(), event->ToStringBase()));
+            LOG(LoggerVerbosity::ERR, std::format("{}: Unable to cast event to EventPacket: evt={}", GetDeviceName(), event->ToStringBase()));
         }
     }
 }

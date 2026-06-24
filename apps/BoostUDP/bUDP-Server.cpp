@@ -2,6 +2,7 @@
 
 #include <iostream>
 #include <string>
+#include <sstream>
 #include <set>
 #include <memory>
 #include <boost/asio.hpp>
@@ -9,13 +10,18 @@
 #include <boost/process/v1.hpp>
 #include <boost/interprocess/managed_shared_memory.hpp>
 #include <boost/interprocess/containers/deque.hpp>
+#include <boost/interprocess/containers/vector.hpp>
 #include <boost/interprocess/allocators/allocator.hpp>
+#include <boost/interprocess/sync/interprocess_condition.hpp>
 #include <map>
 #include <filesystem>
 #include <cstdlib>
 #include "bUDP.h"
 #include "bStriperConfig.h"
 #include "commandLineParser.h"
+#include "watchdog.h"
+#include "threadManager.h"
+
 
 using boost::asio::ip::udp;
 using namespace boost::interprocess;
@@ -25,18 +31,26 @@ namespace bp = boost::process;
 std::string OutDir = "";
 bool StriperEnable = false;
 AllStriperConfig StriperConfig; // Global configuration for the striper
+StriperModeE StriperMode = StriperModeE::NOTSET;
 
-void show_version() {
-    std::cout << "UDP Server (boost) Version: " << VERSION << "." << GIT_HASH << std::endl;
-    std::cout << "Build Date: " << __DATE__ << std::endl;
-    std::cout << "Build Time: " << __TIME__ << std::endl;
+std::string show_version(bool use_cout = false) {
+    std::stringstream ss;
+    ss << "\n\tUDP Server (boost) Version: " << VERSION << "." << GIT_HASH << std::endl;
+    ss << "\tBuild Date: " << __DATE__ << std::endl;
+    ss << "\tBuild Time: " << __TIME__ << std::endl;
 #ifdef _WIN32
-    std::cout << "MSVC Version: " << _MSC_FULL_VER << std::endl;
+    ss << "\tMSVC Version: " << _MSC_FULL_VER << std::endl;
 #else
-    std::cout << "Compiler: " << __VERSION__ << std::endl;
+    ss << "\tCompiler: " << __VERSION__ << std::endl;
 #endif
-    std::cout << "Build Machine: " << BUILD_MACHINE << std::endl;
+    ss << "\tBuild Machine: " << BUILD_MACHINE << std::endl;
+
+    if (use_cout) {
+        std::cout << ss.str();
+    }
+    return ss.str();
 }
+
 
 using namespace my_logger;
 namespace fs = std::filesystem;
@@ -60,6 +74,10 @@ public:
         start_receive();
     }
 
+    void StopServer() {
+        boost::system::error_code ec;
+        socket_.cancel(ec);
+    }
 private:
     udp::socket socket_;
     udp::endpoint remote_endpoint_;
@@ -72,15 +90,28 @@ private:
         socket_.async_receive_from(
             boost::asio::buffer(recv_buffer_), remote_endpoint_,
             [this](boost::system::error_code ec, std::size_t bytes_transferred) {
-                if (!ec && bytes_transferred > 0) {
+                if (ec == boost::asio::error::operation_aborted) {
+                    // Graceful exit: operation was canceled, cleanup and return
+                    return;
+                }
+
+                if (ec) {
+                    // Handle other actual network errors
+                    return;
+                }
+
+                if (bytes_transferred > 0) {
                     process_packet(bytes_transferred);
                 }
+
                 // Immediately resume listening for other clients
                 start_receive();
             });
     }
 
     void process_packet(std::size_t length) {
+        Watchdog& watchdog = Watchdog::GetInstance();
+		watchdog.CheckIn(); // Reset watchdog timer on packet receipt
         std::string message(recv_buffer_.data(), length);
         std::ostringstream oss;
         oss << remote_endpoint_;
@@ -165,98 +196,192 @@ private:
     }
 };
 
+
+// 1. Define types using the shared memory allocator hierarchy
+typedef boost::interprocess::managed_shared_memory::segment_manager     SegmentManager;
+typedef allocator<uint8_t, SegmentManager>                              ByteAllocator;
+typedef allocator<uint8_t, SegmentManager>                              ShmemByteAllocator;
+typedef allocator<void, SegmentManager>                                 VoidAllocator; // placeholder
+// Allocator for StripeDequeMessage (defined below) will be declared after message is known.
+// We'll define the message's internal vector allocator alias below once message is declared.
+
+struct StripeDequeMessage; // forward declare so we can declare the deque allocator type
+typedef boost::interprocess::allocator<int, SegmentManager>                   StripeSharedDataAllocator;
+typedef boost::interprocess::allocator<StripeDequeMessage, SegmentManager>    ShStripeMsgAllocator;
+typedef boost::interprocess::deque<StripeDequeMessage, ShStripeMsgAllocator>  StripeShmDeque;
+
+// Now define the message using an interprocess vector for the payload
 enum class DeqMsgType : int {
     NOTSET = 0,
     MESSAGE = 1,
     PACKET = 2,
     EXIT_PROCESS = 3
 };
-
 struct StripeDequeMessage {
-	DeqMsgType msg_type;
-	int msg_length;
-	std::vector<uint8_t> data; // Example payload, can be extended as needed
+    DeqMsgType msg_type;
+    int msg_length;
+
+    // Use interprocess vector for payload so it can live inside shared memory
+    typedef boost::interprocess::vector<uint8_t, allocator<uint8_t, SegmentManager>> ShmVector;
+    ShmVector data;
+
+    // Allocator-aware constructors
+    explicit StripeDequeMessage(const allocator<uint8_t, SegmentManager>& alloc)
+        : msg_type(DeqMsgType::NOTSET), msg_length(0), data(alloc) {
+    }
+
+    StripeDequeMessage(DeqMsgType t, int len, const allocator<uint8_t, SegmentManager>& alloc)
+        : msg_type(t), msg_length(len), data(alloc) {
+    }
 };
 
-std::ostream& operator<<(std::ostream& os, const StripeDequeMessage& msg) {
-    os << "StripeDequeMessage{msg_type=" 
-       << static_cast<int>(msg.msg_type)
-       << ", msg_length=" << msg.msg_length
-       << ", data=";
-    if (msg.data.size() != msg.msg_length) {
+static std::ostream& operator<<(std::ostream& os, const StripeDequeMessage& msg) {
+    os << "StripeDequeMessage{msg_type="
+        << static_cast<int>(msg.msg_type)
+        << ", msg_length=" << msg.msg_length
+        << ", data=";
+    if (msg.data.size() != static_cast<size_t>(msg.msg_length)) {
         os << "(Warning: msg_length does not match data size!) ";
-	}
+    }
     if (!msg.data.empty()) {
         os << "[";
-  //      for (const auto& byte : msg.data) {
-  //          os << std::to_string(static_cast<int>(byte)) << ", ";
-		//}
-        //for (size_t i = 0; i < msg.data.size(); ++i) {
-        //    os << static_cast<int>(msg.data[i]);
-        //    if (i < msg.data.size() - 1) os << ", ";
-        //}
+        for (auto it = msg.data.begin(); it != msg.data.end(); ++it) {
+            os << std::to_string(static_cast<int>(*it));
+            if (std::next(it) != msg.data.end()) os << ", ";
+        }
         os << "]";
-    } else {
+    }
+    else {
         os << "[]";
-	}
+    }
+    os << "}";
     return os;
 }
 
-// 1. Define types using the shared memory allocator hierarchy
-typedef managed_shared_memory::segment_manager                          SegmentManager;
-typedef allocator<StripeDequeMessage, SegmentManager>                   ShmemAllocator;
-typedef boost::interprocess::deque<StripeDequeMessage, ShmemAllocator>  StripeShmDeque;
+struct StripeSharedData {
+    StripeShmDeque stripe_deque;
+    boost::interprocess::interprocess_condition cond_nonempty;
+    boost::interprocess::interprocess_mutex mutex;
 
-class StripeProcessor {
+    StripeSharedData(StripeSharedDataAllocator alloc_inst) : stripe_deque(alloc_inst) {}
+    
+    // Non-copyable
+    StripeSharedData(const StripeSharedData&) = delete;
+    StripeSharedData& operator=(const StripeSharedData&) = delete;
+
+    // Movable
+    StripeSharedData(StripeSharedData&& other) = delete;
+    StripeSharedData& operator=(StripeSharedData&& other) = delete;
+
+    ~StripeSharedData() {
+        // Destructor logic if needed
+	}
+};
+
+class StripeProcessorManager {
 public:
     std::string shm_name;
     size_t shm_size;
     std::unique_ptr<boost::interprocess::managed_shared_memory> segment;
-    StripeShmDeque* stripe_deque;
+    //StripeShmDeque* stripe_deque;
+    //boost::interprocess::interprocess_condition cond_nonempty;
+    //boost::interprocess::interprocess_mutex mutex;
     bp::v1::child stripe_process;
+	StripeSharedData* shared_data;
 
-    StripeProcessor(const char* shm_name_, size_t shm_size_)
+    StripeProcessorManager(const char* shm_name_, size_t shm_size_)
       : shm_name(shm_name_), shm_size(shm_size_)
     {
         shared_memory_object::remove(shm_name.c_str());
         segment = std::make_unique<boost::interprocess::managed_shared_memory>(
                       boost::interprocess::create_only, shm_name.c_str(), shm_size);
-        ShmemAllocator alloc_inst(segment->get_segment_manager());
-        stripe_deque = segment->construct<StripeShmDeque>("SharedDeque")(alloc_inst);
 
-        for (uint8_t i = 0; i < 5; ++i) {
-            stripe_deque->push_back(StripeDequeMessage{ 
-                DeqMsgType::MESSAGE, 
-                1, 
-                {static_cast<uint8_t>(i * 10)} });
+		shared_data = segment->construct<StripeSharedData>("SharedData")(segment->get_segment_manager());
+        //ShStripeMsgAllocator alloc_inst(segment->get_segment_manager());
+        //stripe_deque = segment->construct<StripeShmDeque>("SharedDeque")(alloc_inst);
+
+        // Create a message using the shared-memory byte allocator
+        allocator<uint8_t, SegmentManager> byteAlloc(segment->get_segment_manager());
+        StripeDequeMessage msg(byteAlloc);
+        msg.msg_type = DeqMsgType::MESSAGE;
+        msg.msg_length = 5;
+        for (uint8_t i = 0; i < msg.msg_length; ++i) {
+            msg.data.push_back(i*10);
         }
-
+        shared_data->stripe_deque.push_back(msg);
+        shared_data->cond_nonempty.notify_one();
     }
+
+    // Non-copyable
+    StripeProcessorManager(const StripeProcessorManager&) = delete;
+    StripeProcessorManager& operator=(const StripeProcessorManager&) = delete;
+
+    // Movable
+    StripeProcessorManager(StripeProcessorManager&& other) noexcept
+      : shm_name(std::move(other.shm_name))
+      , shm_size(other.shm_size)
+      , segment(std::move(other.segment))
+      //, stripe_deque(other.stripe_deque)
+      , stripe_process(std::move(other.stripe_process))
+	  , shared_data(other.shared_data)
+    {
+		other.shared_data = nullptr;
+        other.shm_size = 0;
+    }
+
+    StripeProcessorManager& operator=(StripeProcessorManager&& other) noexcept {
+        if (this != &other) {
+            shm_name = std::move(other.shm_name);
+            shm_size = other.shm_size;
+            segment = std::move(other.segment);
+            //stripe_deque = other.stripe_deque;
+            stripe_process = std::move(other.stripe_process);
+			shared_data = other.shared_data;
+
+            //other.stripe_deque = nullptr;
+            other.shared_data = nullptr;
+            other.shm_size = 0;
+        }
+        return *this;
+    }
+
     void startStripeProcess(const std::string& process_invocation_str) {
         stripe_process = bp::v1::child(process_invocation_str);
+    }
+    
+    ~StripeProcessorManager() {
+        if (stripe_process.running()) {
+            stripe_process.terminate();
+            stripe_process.wait();
+		}
+        if (shared_data) {
+            //segment->destroy<StripeShmDeque>("SharedData");
+        }
+        shared_memory_object::remove(shm_name.c_str());
 	}
 };
 
 int main(int argc, char* argv[]) {
-    LoggerVerbosity verbosity = LoggerVerbosity::CRITICAL;
+    my_logger::LoggerVerbosity verbosity = my_logger::LoggerVerbosity::ERR;
     double WatchdogTimeout = 360;
     std::string LogFile;
 	std::string StripeConfigFile;
     std::string ServerPort = "8080";
     std::string StripeProcessName = "";
     std::vector<bp::v1::child> stripe_processes;
-    std::vector<StripeProcessor> stripe_processors;
+    std::vector<StripeProcessorManager> stripe_processors;
     
 	LOG_INST.verbosity = verbosity;
-    std::cout << "Program: " << argv[0] << std::endl;
+    //std::cout << "Program: " << argv[0] << std::endl;
 
     CommandLineParser CLP;
     CLP.AddCommand({
         CLP_Command("version", "Show version information", [](const std::string& argument) {
-            show_version();
+            std::cout << "\nVERSION INFO:";
+            show_version(true);
             exit(0);
         }, "", typeid(void)),
-        CLP_Command("verbosity,v", "Set logging verbosity level", [&verbosity](const std::string& argument) {
+        CLP_Command("verbosity,v", "Set logging verbosity level: " +  LOG_INST.GetLogLevelNames() , [&verbosity](const std::string& argument) {
             std::string uarg = argument;
             std::transform(uarg.begin(), uarg.end(), uarg.begin(), ::toupper);
             verbosity = magic_enum::enum_cast<LoggerVerbosity>(uarg).value_or(LoggerVerbosity::NOTSET);
@@ -269,12 +394,8 @@ int main(int argc, char* argv[]) {
                     std::cerr << "Invalid verbosity level: " << argument << ". Setting to NOTSET.\n";
                 }
             }
-            std::cout << "\nSetting Logger Verbosity to " << std::string(magic_enum::enum_name(verbosity))
-                << " (" << static_cast<int>(verbosity) << ")"
-                << " argumnet=" << argument
-                << "\n";
 			LOG_INST.verbosity = verbosity;
-        }, "CRITICAL", typeid(std::string)),
+        }, "ERR", typeid(std::string)),
         CLP_Command("outdir, d", "Specifies output directory", [](const std::string& argument) {
             OutDir = argument;
         }, "c:\\local\\output", typeid(std::string)),
@@ -286,7 +407,16 @@ int main(int argc, char* argv[]) {
         }, "8080", typeid(std::string)),
         CLP_Command("stripe_process, x", "Stripe Process name", [&StripeProcessName](const std::string& argument) {
             StripeProcessName = argument;
+            LOG_INST.SetPreamble(argument);
         }, "", typeid(std::string)),
+        CLP_Command("rx_striper, r", "Striper Mode is Receiver (receives FEC streams)", 
+            [](const std::string& argument) {
+            StriperMode = StriperModeE::RECEIVER;
+        }, "", typeid(void)),
+        CLP_Command("tx_striper, t", "Striper Mode is transmitter (creates FEC streams)",
+            [](const std::string& argument) {
+            StriperMode = StriperModeE::TRANSMITTER;
+        }, "", typeid(void)),
         CLP_Command("striper_config, s", "Specifies Striper Configuration JSON file", [&StripeConfigFile](const std::string& argument) {
             try {
                 std::ifstream ifs(argument);
@@ -302,7 +432,6 @@ int main(int argc, char* argv[]) {
                 StriperConfig = j.get<AllStriperConfig>();
                 LOG(LoggerVerbosity::DEBUG, "Striper Configuration:" + j.dump(4));
 				//std::cout << "\nStriper Configuration: " << j.dump(4) << "\n";
-                std::cout << "\nStriper Config loaded successfully from " << argument << "\n";
 				StriperEnable = true;
 				StripeConfigFile = argument;
             }
@@ -334,9 +463,18 @@ int main(int argc, char* argv[]) {
 			std::cout << "\nStriper Configuration JSON file created: " << argument << "\n";
 			exit(0);
         }, "", typeid(std::string)),
+        CLP_Command("watchdog,w", "Watchdog timeout in seconds", [&WatchdogTimeout](const std::string& argument) {
+            try {
+                WatchdogTimeout = std::stod(argument);
+            }
+            catch (const std::exception& e) {
+                std::cerr << "Invalid watchdog timeout value: " << argument << ". Setting to default 360 seconds.\n";
+                WatchdogTimeout = 360;
+            }
+        }, "360", typeid(double)),
         });
 
-    show_version();
+    LOG(LoggerVerbosity::DEBUG, show_version());
     LOG(LoggerVerbosity::DEBUG, "*** Setting DEFAULT command line arguments...***");
     CLP.SetDefaultValues();
     LOG(LoggerVerbosity::DEBUG, "\*** Parsing command line arguments...***");
@@ -352,7 +490,10 @@ int main(int argc, char* argv[]) {
 
     LOG_INST.SetLogFile(LogFile);
     LOG(LoggerVerbosity::DEBUG, "Starting log file: " + LogFile);
-    LOG(LoggerVerbosity::CRITICAL, "Current verbosity = " + std::string(magic_enum::enum_name(LOG_INST.GetVerbosity())));
+    auto vname = std::string(magic_enum::enum_name(LOG_INST.GetVerbosity()));
+    if (vname.empty()) vname = std::to_string((int) LOG_INST.GetVerbosity());
+    LOG(LoggerVerbosity::CRITICAL, "Current verbosity = " + vname);    
+    
     if (StriperEnable) {
         LOG(LoggerVerbosity::INFO, "Striper Configuration Enabled");
         json j = StriperConfig;
@@ -361,46 +502,64 @@ int main(int argc, char* argv[]) {
         LOG(LoggerVerbosity::DEBUG, "Striper Configuration Disabled");
 	}
 
+    // Start WATCHDOG thread to monitor and adjust FEC stripes
+    ThreadManager& TM = ThreadManager::GetInstance();
+    Watchdog& watchdog = Watchdog::GetInstance();
+    // watchdog.SetTimeout(vm["watchdog"].as<double>();
+    watchdog.SetTimeout(WatchdogTimeout);
+    watchdog.SetOnTimeoutForceExit(false); // Force exit on watchdog timeout
+    watchdog.SetOnTimeoutCallback([]() {
+        LOG(LoggerVerbosity::CRITICAL, "Watchdog timeout callback invoked. Performing cleanup before exit.");
+        // Perform any necessary cleanup here
+		});
+    TM.StartThread("WatchdogMonitor", Watchdog::monitor_thread);
+
+	LOG(LoggerVerbosity::CRITICAL, "Striper Mode: " + std::string(magic_enum::enum_name(StriperMode)));
     if (!StripeProcessName.empty()) {
 		// This is a Stripe Processor, not the main UDP server
         LOG(LoggerVerbosity::INFO, "This is a Stripe Processor: " + StripeProcessName);
         managed_shared_memory segment(open_only, StripeProcessName.c_str());
         // Find the named deque instance
-        std::pair<StripeShmDeque*, managed_shared_memory::handle_t> res =
-            segment.find<StripeShmDeque>("SharedDeque");
+        std::pair<StripeSharedData*, managed_shared_memory::handle_t> res =
+            segment.find<StripeSharedData>("SharedData");
         if (res.first != nullptr) {
-            StripeShmDeque* my_deque = res.first;
+            StripeSharedData* my_data = res.first;
 
             // Read and pop elements from the deque
-            std::cout << "\n["<< StripeProcessName <<"] Found deque with " << my_deque->size() << " elements:\n";
-            while (!my_deque->empty()) {
-                std::cout << "[" << StripeProcessName << "] Popped: " << my_deque->front() << "\n";
-                my_deque->pop_front();
+			LOG(LoggerVerbosity::INFO, "Found deque with " + std::to_string(my_data->stripe_deque.size()) + " elements.");
+            while (!my_data->stripe_deque.empty()) {
+                std::stringstream ss;
+                ss << my_data->stripe_deque.front();
+                LOG(LoggerVerbosity::INFO, "Popped: " + ss.str());
+                my_data->stripe_deque.pop_front();
             }
         }
         else {
-            std::cerr << "[" << StripeProcessName << "] Error: Deque object not found!\n";
+			LOG(LoggerVerbosity::ERR, "Deque object not found in shared memory for Stripe Process: " + StripeProcessName);
         }
-		exit(1);
+		watchdog.StopMonitoring();
 	}
 	else { // Main UDP Server
         if (StriperEnable) {
 			// Striping is enabled so create the Stripe Processor processes
-            //boost::asio::io_context ctx;
-            //bp::process_stdio bstdio;
-            //bstdio.out = stdout;
-            //bstdio.err = stderr;
-
-            
 
             for (int sid = 0; sid < StriperConfig.schedulerCfg.MaxNumberStripes; ++sid) {
                 std::string process_name = "Stripe-" + std::to_string(sid);
                 std::string process_path = argv[0];
                 std::string process_args = " -x " + process_name + " --striper_config " + StripeConfigFile + " -l " + process_name + ".log";
+				process_args += " --verbosity " + std::string(magic_enum::enum_name(verbosity));
+				process_args += " --watchdog " + std::to_string(WatchdogTimeout);
+                if (StriperMode == StriperModeE::RECEIVER) {
+                    process_args += " --rx_striper";
+                }
+                else if (StriperMode == StriperModeE::TRANSMITTER) {
+                    process_args += " --tx_striper";
+				}
+
                 LOG(LoggerVerbosity::INFO, "Starting Stripe Process: " + process_name + " at path: " + process_path + " with args: " + process_args);
                 
                 try {
-					StripeProcessor sp(process_name.c_str(), 65536); // 64KB shared memory for each stripe
+					StripeProcessorManager sp(process_name.c_str(), 65536); // 64KB shared memory for each stripe
                     sp.startStripeProcess(process_path + process_args);
                     stripe_processors.emplace_back(std::move(sp));
                 }
@@ -433,10 +592,20 @@ int main(int argc, char* argv[]) {
             UdpServer server(io_context, port);
         
             std::cout << "\nUDP Server running on port " << ServerPort << "..." << std::endl;
+            watchdog.SetOnTimeoutCallback([&server]() {
+                LOG(LoggerVerbosity::CRITICAL, "Watchdog timeout callback invoked. Performing cleanup before exit.");
+                // Perform any necessary cleanup here
+				server.StopServer(); // Explicitly call destructor to clean up resources
+                });
             io_context.run();
         } catch (std::exception& e) {
             std::cerr << "Exception: " << e.what() << std::endl;
         }
     }
+
+    // Wait for threads to join
+    LOG(LoggerVerbosity::INFO, "Waiting threads to join...");
+    TM.WaitAllThreads(); // Wait for all threads to finish
+	stripe_processes.clear(); // Clear the vector of child processes
     return 0;
 }

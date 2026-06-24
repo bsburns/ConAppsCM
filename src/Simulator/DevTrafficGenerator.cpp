@@ -25,7 +25,7 @@ DeviceTrafficGeneratorBase::DeviceTrafficGeneratorBase(const std::string& name,
 {
     // Validate configuration
     if (cfg.MinBurstSizePackets > cfg.MaxBurstSizePackets) {
-        LOG(LoggerVerbosity::ERROR, std::format("{}: Config Validation:: Min Burst Size > Max BurstSize", GetDeviceName()));
+        LOG(LoggerVerbosity::ERR, std::format("{}: Config Validation:: Min Burst Size > Max BurstSize", GetDeviceName()));
         cfg.MaxBurstSizePackets = cfg.MinBurstSizePackets;
     }
     
@@ -97,11 +97,11 @@ int DeviceTrafficGeneratorBase::ScheduleNextPacket(uint64_t currTime_ns)
 void DeviceTrafficGeneratorBase::ExecuteEvent(std::shared_ptr<EventBase> event)
 {
     if (event->GetDeviceType() != DeviceType::TRAFFIC_GEN) {
-        LOG(LoggerVerbosity::ERROR, std::format("{}:ExecuteEvent:: Invalid Device Type evt={}", GetDeviceName(), event->ToStringBase()));
+        LOG(LoggerVerbosity::ERR, std::format("{}:ExecuteEvent:: Invalid Device Type evt={}", GetDeviceName(), event->ToStringBase()));
         return;
     }
     if (event->GetEventType() != EventType::TRAFFIC_GENERATOR || event->GetEventAction() != EventAction::GENERATE_PKT) {
-        LOG(LoggerVerbosity::ERROR, std::format("{}:ExecuteEvent:: Invalid event evt={}", GetDeviceName(), event->ToStringBase()));
+        LOG(LoggerVerbosity::ERR, std::format("{}:ExecuteEvent:: Invalid event evt={}", GetDeviceName(), event->ToStringBase()));
         return;
     }
     ScheduleNextPacket(event->timestamp_ns);

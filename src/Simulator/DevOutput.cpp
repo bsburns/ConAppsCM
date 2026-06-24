@@ -47,7 +47,7 @@ void DeviceOutputBase::ExecuteEvent(std::shared_ptr<EventBase> event) {
                 << pktEvt->FillCell
                 << "\n";
         } else {
-            LOG(LoggerVerbosity::ERROR, std::format("{}: Unable to cast event to EventPacket: evt={}", GetDeviceName(), event->ToStringBase()));
+            LOG(LoggerVerbosity::ERR, std::format("{}: Unable to cast event to EventPacket: evt={}", GetDeviceName(), event->ToStringBase()));
         }
     }
 }

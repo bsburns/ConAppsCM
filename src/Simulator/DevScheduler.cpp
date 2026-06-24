@@ -18,7 +18,7 @@ void DeviceSchedulerFixed::ExecuteEvent(std::shared_ptr<EventBase> event) {
         if (std::shared_ptr<EventPacket> pktEvt = std::dynamic_pointer_cast<EventPacket>(event)) {
             StatsRxPackets.addValue(pktEvt->packet_length);
         } else {
-            LOG(LoggerVerbosity::ERROR, std::format("{}: Unable to cast event to EventPacket: evt={}", GetDeviceName(), event->ToStringBase()));
+            LOG(LoggerVerbosity::ERR, std::format("{}: Unable to cast event to EventPacket: evt={}", GetDeviceName(), event->ToStringBase()));
         }
     }
 }
@@ -37,7 +37,7 @@ void DeviceSchedulerDynamic::ExecuteEvent(std::shared_ptr<EventBase> event) {
             LOG(LoggerVerbosity::INFO, std::format("{}:Exec: Send packet to Stripe={} evt={}", GetDeviceName(), stripeID, pktEvt->ToStringBase()));
             DeviceBase::simMgr.ScheduleEvent(event);
         } else {
-            LOG(LoggerVerbosity::ERROR, std::format("{}: Unable to cast event to EventPacket: evt={}", GetDeviceName(), event->ToStringBase()));
+            LOG(LoggerVerbosity::ERR, std::format("{}: Unable to cast event to EventPacket: evt={}", GetDeviceName(), event->ToStringBase()));
         }
     }
 }
@@ -49,7 +49,7 @@ void DeviceSchedulerAffinity::ExecuteEvent(std::shared_ptr<EventBase> event) {
         if (std::shared_ptr<EventPacket> pktEvt = std::dynamic_pointer_cast<EventPacket>(event)) {
             StatsRxPackets.addValue(pktEvt->packet_length);
         } else {
-            LOG(LoggerVerbosity::ERROR, std::format("{}: Unable to cast event to EventPacket: evt={}", GetDeviceName(), event->ToStringBase()));
+            LOG(LoggerVerbosity::ERR, std::format("{}: Unable to cast event to EventPacket: evt={}", GetDeviceName(), event->ToStringBase()));
         }
     }
 }

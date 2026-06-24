@@ -19,17 +19,22 @@
 #include "PacketHeader.h"
 #include "bUDP.h"
 
-
-void show_version() {
-    std::cout << "UDP Client (boost) Version: " << VERSION << "." << GIT_HASH << std::endl;
-    std::cout << "Build Date: " << __DATE__ << std::endl;
-    std::cout << "Build Time: " << __TIME__ << std::endl;
+std::string show_version(bool use_cout = false) {
+    std::stringstream ss;
+    ss << "\n\tUDP Client (boost) Version: " << VERSION << "." << GIT_HASH << std::endl;
+    ss << "\tBuild Date: " << __DATE__ << std::endl;
+    ss << "\tBuild Time: " << __TIME__ << std::endl;
 #ifdef _WIN32
-    std::cout << "MSVC Version: " << _MSC_FULL_VER << std::endl;
+    ss << "\tMSVC Version: " << _MSC_FULL_VER << std::endl;
 #else
-    std::cout << "Compiler: " << __VERSION__ << std::endl;
+    ss << "\tCompiler: " << __VERSION__ << std::endl;
 #endif
-    std::cout << "Build Machine: " << BUILD_MACHINE << std::endl;
+    ss << "\tBuild Machine: " << BUILD_MACHINE << std::endl;
+
+    if (use_cout) {
+        std::cout << ss.str();
+    }
+    return ss.str();
 }
 
 using namespace my_logger;
@@ -37,7 +42,7 @@ using boost::asio::ip::udp;
 
 
 int main(int argc, char* argv[]) {
-    LoggerVerbosity verbosity = LoggerVerbosity::CRITICAL;
+    LoggerVerbosity verbosity = LoggerVerbosity::ERR;
 	double WatchdogTimeout = 360;
     std::string LogFile;
     std::string SendFile;
@@ -49,10 +54,10 @@ int main(int argc, char* argv[]) {
     CommandLineParser CLP;
     CLP.AddCommand({
         CLP_Command("version", "Show version information", [](const std::string& argument) {
-            show_version();
+            show_version(true);
             exit(0);
         }, "", typeid(void)),
-        CLP_Command("verbosity,v", "Set logging verbosity level", [&verbosity](const std::string& argument) {
+        CLP_Command("verbosity,v", "Set logging verbosity level: " + LOG_INST.GetLogLevelNames(), [&verbosity](const std::string& argument) {
             std::string uarg = argument;
             std::transform(uarg.begin(), uarg.end(), uarg.begin(), ::toupper);
             verbosity = magic_enum::enum_cast<LoggerVerbosity>(uarg).value_or(LoggerVerbosity::NOTSET);
@@ -65,11 +70,13 @@ int main(int argc, char* argv[]) {
                     std::cerr << "Invalid verbosity level: " << argument << ". Setting to NOTSET.\n";
                 }
 			}
+            LOG_INST.verbosity = verbosity;
+     
             std::cout << "\nSetting Logger Verbosity to " << std::string(magic_enum::enum_name(verbosity))
                 << " (" << static_cast<int>(verbosity) << ")"
-				<< " argumnet=" << argument
+				<< " argument=" << argument
                 << "\n";
-        }, "CRITICAL", typeid(std::string)),
+        }, "ERR", typeid(std::string)),
         CLP_Command("sendfile, f", "Specifies file name to send", [&SendFile, &sendMode](const std::string& argument) {
             SendFile = argument;
             sendMode = UdpSendMode::SEND_FILE;
@@ -88,10 +95,10 @@ int main(int argc, char* argv[]) {
         }, "127.0.0.1", typeid(std::string)),
         });
 
-    show_version();
-    std::cout << "\n** Setting DEFAULT command line arguments...**\n";
+    LOG(LoggerVerbosity::DEBUG, show_version());
+    LOG(LoggerVerbosity::DEBUG, "*** Setting DEFAULT command line arguments...***");
     CLP.SetDefaultValues();
-    std::cout << "\n** Parsing command line arguments...**\n";
+    LOG(LoggerVerbosity::DEBUG, "\*** Parsing command line arguments...***");
     CLP.ProcessArguments(argc, argv);
 
     LOG_INST.SetLogFile(LogFile);

@@ -24,7 +24,7 @@ NLOHMANN_JSON_SERIALIZE_ENUM(SchedulerMode, {
     {SchedulerMode::STRM_AFFINITY,   "STRM_AFFINITY"},
     })
 
-    enum class FEC_Mode : int {
+enum class FEC_Mode : int {
     NONE, // No FEC
     OptionA, // Column Only FEC
     OptionB, // Row and Column FEC

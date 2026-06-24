@@ -11,6 +11,7 @@
 
 #include <thread>
 #include <map>
+#include "logger.h"
 
 
 class ThreadManager {
@@ -31,7 +32,7 @@ public:
 	void StartThread(std::string threadName, std::function<void()> threadFunc) {
 		auto it = threads.find(threadName);
 		if (it != threads.end()) {
-			std::cout << "\nThread with name " << threadName << " already exists. Cannot start another thread with the same name.\n";
+			std::cerr << "\nThread with name \"" << threadName << "\" already exists. Cannot start another thread with the same name.\n";
 			return;
 		}
 		threads[threadName] = std::thread(threadFunc);
@@ -42,11 +43,11 @@ public:
 		if (it != threads.end()) {
 			if (it->second.joinable()) {
 				it->second.join();
-				std::cout << "\nThread " << threadName << " has been stopped and joined successfully.\n";
+				LOG(my_logger::LoggerVerbosity::CRITICAL, "Thread \"" + threadName + "\" has been stopped and joined successfully.");
 			}
 			threads.erase(it);
 		} else {
-			std::cout << "\nNo thread with name " << threadName << " found. Cannot stop non-existent thread.\n";
+			std::cerr << "\nNo thread with name \"" << threadName << "\" found. Cannot stop non-existent thread.\n";
 		}
 	}
 
@@ -58,7 +59,7 @@ public:
 		for (auto& [name, thread] : threads) {
 			if (thread.joinable()) {
 				thread.join();
-				std::cout << "\nThread " << name << " has been joined successfully.\n";
+				LOG(my_logger::LoggerVerbosity::INFO, "Thread \"" + name + "\" has been joined successfully.");
 			}
 		}
 		threads.clear();

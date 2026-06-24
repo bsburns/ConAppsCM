@@ -19,6 +19,12 @@ enum class UdpSendMode : int {
     SEND_FILE = 2
 };
 
+enum class StriperModeE : int {
+    NOTSET = 0,
+    TRANSMITTER = 1,
+    RECEIVER = 2
+};
+
 class FileTransferHeader {
 public:
     uint16_t chunkNumber;
