@@ -102,7 +102,7 @@ int main(int argc, char* argv[]) {
     LOG(LoggerVerbosity::DEBUG, show_version());
     LOG(LoggerVerbosity::DEBUG, "*** Setting DEFAULT command line arguments...***");
     CLP.SetDefaultValues();
-    LOG(LoggerVerbosity::DEBUG, "\*** Parsing command line arguments...***");
+    LOG(LoggerVerbosity::DEBUG, "*** Parsing command line arguments...***");
     CLP.ProcessArguments(argc, argv);
 
     LOG_INST.SetLogFile(LogFile);

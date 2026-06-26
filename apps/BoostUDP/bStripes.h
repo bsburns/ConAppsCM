@@ -34,7 +34,7 @@ class StripesManagerImpl;
 class StripesManager {
 public:
     StripesManager() = delete;
-    StripesManager(AllStriperConfig& striper_config_);
+    StripesManager(AllStriperConfig* striper_config_);
     ~StripesManager();
 
     int Initialize(StriperModeE mode_, std::string path_, std::string args_);
@@ -55,7 +55,7 @@ private:
     std::string name;
 
 public:
-    StripeProcess() = default;
+    StripeProcess() = delete;
     StripeProcess(std::string name_);
 
     // Rule of five (disable copy, allow move)

@@ -373,66 +373,68 @@ int main(int argc, char* argv[]) {
     // watchdog.SetTimeout(vm["watchdog"].as<double>();
     watchdog.SetTimeout(WatchdogTimeout);
     watchdog.SetOnTimeoutForceExit(false); // Force exit on watchdog timeout
-    watchdog.SetOnTimeoutCallback([]() {
-        LOG(LoggerVerbosity::CRITICAL, "Watchdog timeout callback invoked. Performing cleanup before exit.");
-        // Perform any necessary cleanup here
-		});
-    TM.StartThread("WatchdogMonitor", Watchdog::monitor_thread);
 
-	LOG(LoggerVerbosity::CRITICAL, "Striper Mode: " + std::string(magic_enum::enum_name(StriperMode)));
+    watchdog.SetOnTimeoutCallback([]() {
+        // Perform any necessary cleanup here
+        LOG(LoggerVerbosity::CRITICAL, "Watchdog timeout callback invoked. Performing cleanup before exit.");
+        });
+
+    TM.StartThread("WatchdogMonitor", Watchdog::monitor_thread);
+    if (1) {
+        std::string arg_string = "[";
+        for (int i = 0; i < argc; ++i) {
+            arg_string += argv[i];
+            if ((i + 1) != argc) arg_string += " ";
+        }
+        arg_string += "]";
+        LOG(LoggerVerbosity::CRITICAL, "Arguments = " + arg_string);
+    }
+
+    LOG(LoggerVerbosity::CRITICAL, "Striper Mode: " + std::string(magic_enum::enum_name(StriperMode)));
     if (!StripeProcessName.empty()) {
 		// This is a Stripe Processor, not the main UDP server
 
-        /*
-        LOG(LoggerVerbosity::INFO, "This is a Stripe Processor: " + StripeProcessName);
-        managed_shared_memory segment(open_only, StripeProcessName.c_str());
-        // Find the named deque instance
-        std::pair<StripeSharedData*, managed_shared_memory::handle_t> res =
-            segment.find<StripeSharedData>("SharedData");
-        if (res.first != nullptr) {
-            StripeSharedData* my_data = res.first;
+        Debugger debug;
+        debug.Launch();
 
-            // Read and pop elements from the deque
-			LOG(LoggerVerbosity::INFO, "Found deque with " + std::to_string(my_data->stripe_deque.size()) + " elements.");
-            while (!my_data->stripe_deque.empty()) {
-                std::stringstream ss;
-                ss << my_data->stripe_deque.front();
-                LOG(LoggerVerbosity::INFO, "Popped: " + ss.str());
-                my_data->stripe_deque.pop_front();
-            }
-        }
-        else {
-			LOG(LoggerVerbosity::ERR, "Deque object not found in shared memory for Stripe Process: " + StripeProcessName);
-        }
-        */
-        StripeProcess(StripeProcessName);
+        auto sp = StripeProcess(StripeProcessName);
 		watchdog.StopMonitoring();
-	} else { 
+    }
+    else {
         // Main UDP Server
         if (StriperEnable) {
-			// Striping is enabled so create the Stripe Processor processes
+            // Striping is enabled so create the Stripe Processor processes
             std::string process_args = " --striper_config " + StripeConfigFile;
             process_args += " --verbosity " + std::string(magic_enum::enum_name(verbosity));
             process_args += " --watchdog " + std::to_string(WatchdogTimeout);
 
-            StripesManager stripesMgr(StriperConfig);
+            StripesManager stripesMgr(&StriperConfig);
             stripesMgr.Initialize(StriperMode, argv[0], process_args);
             stripesMgr.WaitForComplete();
-		}
-        try {
-            boost::asio::io_context io_context;
-            short port = static_cast<short>(std::stoi(ServerPort));
-            UdpServer server(io_context, port, OutDir);
-        
-            std::cout << "\nUDP Server running on port " << ServerPort << "..." << std::endl;
-            watchdog.SetOnTimeoutCallback([&server]() {
-                LOG(LoggerVerbosity::CRITICAL, "Watchdog timeout callback invoked. Performing cleanup before exit.");
-                // Perform any necessary cleanup here
-				server.StopServer(); // Explicitly call destructor to clean up resources
-                });
-            io_context.run();
-        } catch (std::exception& e) {
-            std::cerr << "Exception: " << e.what() << std::endl;
+        }
+
+        if (TM.force_stop) {
+            // Timeout must have occured durring launching of stripe processes
+            LOG(LoggerVerbosity::CRITICAL, "Exiting progam as FORCE_STOP was issued");
+        }
+        else {
+
+            try {
+                boost::asio::io_context io_context;
+                short port = static_cast<short>(std::stoi(ServerPort));
+                UdpServer server(io_context, port, OutDir);
+
+                std::cout << "\nUDP Server running on port " << ServerPort << "..." << std::endl;
+                watchdog.SetOnTimeoutCallback([&server]() {
+                    LOG(LoggerVerbosity::CRITICAL, "Watchdog timeout callback invoked. Performing cleanup before exit.");
+                    // Perform any necessary cleanup here
+                    server.StopServer(); // Explicitly call destructor to clean up resources
+                    });
+                io_context.run();
+            }
+            catch (std::exception& e) {
+                std::cerr << "Exception: " << e.what() << std::endl;
+            }
         }
     }
 

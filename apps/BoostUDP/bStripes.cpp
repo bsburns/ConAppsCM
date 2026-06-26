@@ -198,13 +198,13 @@ public:
 class StripesManagerImpl {
 private:
     std::vector<StripeProcessManager> stripe_processors;
-    AllStriperConfig& striperConfig;
+    AllStriperConfig* striperConfig = nullptr;
     StriperModeE mode;
     std::string process_path;
     std::string process_args;
 
 public:
-    StripesManagerImpl(AllStriperConfig& striper_config_) 
+    StripesManagerImpl(AllStriperConfig* striper_config_) 
         : striperConfig(striper_config_) {}
 
     int InitializeInternal(StriperModeE mode_, std::string path_, std::string args_) {
@@ -219,9 +219,9 @@ public:
         process_args += " --tx_striper";
         }
 
-        for (int sid = 0; sid < striperConfig.schedulerCfg.MaxNumberStripes; ++sid) {
+        for (int sid = 0; sid < striperConfig->schedulerCfg.MaxNumberStripes; ++sid) {
             std::string process_name = "Stripe-" + std::to_string(sid);
-            std::string stripe_args = process_args + " -x " + process_name + " -l " + process_name + ".log";
+            std::string stripe_args = process_args + " --stripe_process " + process_name + " --logfile " + process_name + ".log";
 
             LOG(LoggerVerbosity::INFO, "Starting Stripe Process: " + process_name + " at path: " + process_path + " with args: " + process_args);
 
@@ -252,7 +252,7 @@ public:
 };
 
 // Public StripesManager class methods
-StripesManager::StripesManager(AllStriperConfig& striper_config_) : impl(std::make_unique< StripesManagerImpl>(striper_config_)) {}
+StripesManager::StripesManager(AllStriperConfig* striper_config_) : impl(std::make_unique< StripesManagerImpl>(striper_config_)) {}
 StripesManager::~StripesManager() = default;
 StripesManager::StripesManager(StripesManager&&) noexcept = default;
 StripesManager& StripesManager::operator=(StripesManager&&) noexcept = default;
@@ -288,6 +288,5 @@ StripeProcess::StripeProcess(std::string name_) : name(name_) {
     else {
         LOG(LoggerVerbosity::ERR, "Deque object not found in shared memory for Stripe Process: " + name);
     }
-
 }
 

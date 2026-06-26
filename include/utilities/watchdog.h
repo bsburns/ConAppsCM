@@ -17,6 +17,7 @@
 #include "logger.h"
 #include "threadManager.h"
 
+using namespace my_logger;
 
 class Watchdog {
 private:
@@ -84,8 +85,7 @@ public:
 				std::chrono::duration<double> deltaTime = now - last_active_time;
 				if (deltaTime.count() > GetInstance().timeout_s*0.80) {
 					if (deltaTime.count() > GetInstance().timeout_s) {
-						std::cout<< "\n\nWatchdog Timer Expired with inactivity at " << deltaTime.count() << "\n";
-						LOG(my_logger::LoggerVerbosity::ERR, "\n\nWatchdog Timer Expired with inactivity at " + std::to_string(deltaTime.count()));
+						LOG(LoggerVerbosity::CRITICAL, "\n\nWatchdog Timer Expired with inactivity at " + std::to_string(deltaTime.count()));
 						// Force closing the program
 						TM.StopAllThreads();
 
@@ -95,7 +95,7 @@ public:
 							}
 						}
 						if (GetInstance().onTimeoutForceExit) {
-							LOG(my_logger::LoggerVerbosity::CRITICAL, "\nForcing program exit due to watchdog timeout.\n");
+							LOG(LoggerVerbosity::CRITICAL, "\nForcing program exit due to watchdog timeout.\n");
 							std::cout << "\nForcing program exit due to watchdog timeout.\n";
 							exit(0);
 						}
@@ -103,14 +103,16 @@ public:
 					}
 					if (!warning_issued) {
 						warning_issued = true;
-						LOG(my_logger::LoggerVerbosity::WARNING, "Watchdog timer is about to expire in " +
+						LOG(LoggerVerbosity::WARNING, "Watchdog timer is about to expire in " +
 							std::to_string(GetInstance().timeout_s - deltaTime.count()) + " seconds" +
 							" : Watchdog Time=" + std::to_string(deltaTime.count()) + " TO=" +
 							std::to_string(GetInstance().timeout_s)
 						);
-						std::cout << "\n\nWARNING: Watchdog timer is about to expire in "
-							<< (GetInstance().timeout_s - deltaTime.count()) << " seconds";
-						std::cout << " : Watchdog Time=" <<  deltaTime.count() << " TO="<< GetInstance().timeout_s << "\n";
+						LOG(LoggerVerbosity::CRITICAL, "WARNING: Watchdog timer is about to expire in "
+							+ std::to_string(GetInstance().timeout_s - deltaTime.count()) 
+							+ " seconds : Watchdog Tome=" + std::to_string(deltaTime.count()) 
+							+ " TO=" + std::to_string(GetInstance().timeout_s)
+						);
 					}
 				}
 			}

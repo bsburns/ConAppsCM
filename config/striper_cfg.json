@@ -1,6 +1,6 @@
 {
     "schedulerCfg": {
-        "MaxNumberStripes": 16,
+        "MaxNumberStripes": 1,
         "MinNumberStripes": 1,
         "Mode": "DYNAMIC_STRIPES",
         "RevaluationInterval_ns": 100

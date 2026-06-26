@@ -16,6 +16,7 @@
 #include <vector>
 #include <ctime>
 
+
 namespace util {
 
 inline std::string trim(const std::string& s) {
@@ -91,5 +92,6 @@ inline bool loadListFromFile(std::list<std::string>& data, const std::string& fi
 //    oss << std::put_time(&timeStruct, format.c_str()); // C++11 and later
 //    return oss.str();
 //}
+
 
 } // end namespace util

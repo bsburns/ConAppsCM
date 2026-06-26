@@ -17,8 +17,16 @@
 
 #include <boost/asio.hpp>
 
+#ifdef _WIN32
+#include <processthreadsapi.h>
+#include <process.h>
+#else
+#include <unistd.h>
+#endif
+
 #include "logger.h"
 #include "watchdog.h"
+#include "threadManager.h"
 
 using boost::asio::ip::udp;
 using namespace my_logger;
@@ -287,3 +295,36 @@ private:
         }
     }
 };
+
+class Debugger {
+public:
+
+    Debugger() {}
+    static void Launch() {
+        // No-op stub for cross-platform compatibility.
+        // On Windows, you could add: __debugbreak(); or DebugBreak();
+        // On other platforms, you might use raise(SIGTRAP);
+        // For now, just print a message.
+        std::cout << "[Debugger] Launch called (no-op stub)." << std::endl;
+        uint32_t pid = 1234;
+#ifdef _WIN32
+        DWORD dpid = GetCurrentProcessId();
+        pid = dpid;
+#else
+        pid = getpid();
+#endif
+
+        ThreadManager& TM = ThreadManager::GetInstance();
+        for (int i = 0; i < 100 && !TM.force_stop; i++) {
+            // Note this is a delay loop to allow time to Attach Debugger to this process
+            // Once attached, you can set i=101 in debugger to exit delay loop
+
+
+            // Pause execution for 1 second
+            std::cout << "Waiting for debuuger to attach:" << " pid=" << pid << " iter=" << i << "\n";
+            std::this_thread::sleep_for(std::chrono::seconds(2));
+        }
+    }
+};
+
+
