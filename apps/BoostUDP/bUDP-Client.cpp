@@ -47,6 +47,7 @@ int main(int argc, char* argv[]) {
     std::string LogFile;
     std::string SendFile;
     std::string ServerPort = "8080";
+    std::string SourcePort = "100";
     std::string ServerIP = "127.0.0.1";
 	bool interactiveMode = false;
 	UdpSendMode sendMode = UdpSendMode::MESSAGE;
@@ -76,7 +77,7 @@ int main(int argc, char* argv[]) {
                 << " (" << static_cast<int>(verbosity) << ")"
 				<< " argument=" << argument
                 << "\n";
-        }, "ERR", typeid(std::string)),
+        }, "INFO", typeid(std::string)),
         CLP_Command("sendfile, f", "Specifies file name to send", [&SendFile, &sendMode](const std::string& argument) {
             SendFile = argument;
             sendMode = UdpSendMode::SEND_FILE;
@@ -84,9 +85,12 @@ int main(int argc, char* argv[]) {
         CLP_Command("logfile, l", "Specifies Log file name", [&LogFile](const std::string& argument) {
             LogFile = argument;
         }, "bUDPC.log", typeid(std::string)),
-        CLP_Command("server_port, p", "Specifies UDP Port number of server", [&ServerPort](const std::string& argument) {
+        CLP_Command("server_port, p", "Specifies UDP Destination Port number of server", [&ServerPort](const std::string& argument) {
             ServerPort = argument;
         }, "8080", typeid(std::string)),
+        CLP_Command("source_port, a", "Specifies UDP Source Port number of this client", [&SourcePort](const std::string& argument) {
+            SourcePort = argument;
+        }, "100", typeid(std::string)),
         CLP_Command("interactive, i", "Allows multiple Messages to be sent from client", [&interactiveMode](const std::string& argument) {
             interactiveMode = true;
         }, "", typeid(void)),
@@ -106,8 +110,14 @@ int main(int argc, char* argv[]) {
 
     try {
         // 1. Every Asio program needs an io_context object
-        boost::asio::io_context io_context;
 
+        UdpClient uclient(ServerIP, SourcePort, ServerPort, sendMode);
+        auto rc = uclient.SendFile(SendFile);
+        if (rc) {
+            LOG(LoggerVerbosity::ERR, "Send file error: rc=" + std::to_string(rc));
+        }
+/*
+        boost::asio::io_context io_context;
         // 2. Resolve the remote hostname or IP address and port
         LOG(LoggerVerbosity::INFO, "Connecting to " + ServerIP + ":" + ServerPort);
         udp::resolver resolver(io_context);
@@ -156,7 +166,6 @@ int main(int argc, char* argv[]) {
 
             LOG(LoggerVerbosity::INFO, "File sent successfully. Total bytes: " + 
                 std::to_string(total_bytes_sent));
-
         } else {
             // 4. Send a message to the remote endpoint
             std::string message = "Hello from Synchronous bUDP Client!";
@@ -200,6 +209,7 @@ int main(int argc, char* argv[]) {
                 LOG(LoggerVerbosity::INFO, "Not in interactive mode, exiting after one message.");
             }
         }
+        */
     } catch (std::exception& e) {
         std::cerr << "Exception: " << e.what() << std::endl;
     }

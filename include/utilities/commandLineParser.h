@@ -107,7 +107,7 @@ public:
 				}
 			} // end for each command
 			if (!matched) {
-				std::cout << "\nUnknown command line argument: " << arg << "\n";
+				std::cerr << "\nUnknown command line argument: " << arg << "\n";
 				exit(100);
 			}
 		} // end for each argument

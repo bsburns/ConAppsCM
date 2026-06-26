@@ -1,6 +1,6 @@
 {
     "schedulerCfg": {
-        "MaxNumberStripes": 2,
+        "MaxNumberStripes": 16,
         "MinNumberStripes": 1,
         "Mode": "DYNAMIC_STRIPES",
         "RevaluationInterval_ns": 100
@@ -10,6 +10,8 @@
         "MinPacketRate_pps": 0.0,
         "Mode": "NONE",
         "Parm_D_rows": 100,
-        "Parm_L_cols": 5
+        "Parm_L_cols": 5,
+        "StartUdpDstPortNumber": 5000,
+        "StartUdpSrcPortNumber": 100
     }
 }

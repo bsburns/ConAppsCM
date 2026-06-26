@@ -3,27 +3,24 @@
 #include <iostream>
 #include <string>
 #include <sstream>
-#include <set>
 #include <memory>
 #include <boost/asio.hpp>
-//#include <boost/process/v2/process.hpp>
 #include <boost/process/v1.hpp>
 #include <boost/interprocess/managed_shared_memory.hpp>
 #include <boost/interprocess/containers/deque.hpp>
 #include <boost/interprocess/containers/vector.hpp>
 #include <boost/interprocess/allocators/allocator.hpp>
 #include <boost/interprocess/sync/interprocess_condition.hpp>
-#include <map>
-#include <filesystem>
-#include <cstdlib>
+
 #include "bUDP.h"
 #include "bStriperConfig.h"
+#include "bStripes.h"
 #include "commandLineParser.h"
 #include "watchdog.h"
 #include "threadManager.h"
 
 
-using boost::asio::ip::udp;
+
 using namespace boost::interprocess;
 namespace bp = boost::process;
 
@@ -56,145 +53,6 @@ using namespace my_logger;
 namespace fs = std::filesystem;
 
 
-class udp_connection {
-public:
-	UdpSendMode mode = UdpSendMode::NOTSET;
-	std::map<uint16_t, std::vector<uint8_t>> file_chunks; // For storing file chunks if in SEND_FILE mode
-	std::string file_name; // Store the file name being sent by the client
-	std::chrono::system_clock::time_point connection_time; // Track when the connection was established
-
-    udp_connection() {}
-};
-
-class UdpServer {
-public:
-    // Bind to the given port on all available network interfaces
-    UdpServer(boost::asio::io_context& io_context, short port)
-        : socket_(io_context, udp::endpoint(udp::v4(), port)) {
-        start_receive();
-    }
-
-    void StopServer() {
-        boost::system::error_code ec;
-        socket_.cancel(ec);
-    }
-private:
-    udp::socket socket_;
-    udp::endpoint remote_endpoint_;
-    std::array<char, 4096> recv_buffer_;
-    std::set<udp::endpoint> known_clients_; // Active client registry
-	std::map<udp::endpoint, udp_connection> KnownClientConnections; // Map of client endpoints to their connection info
-
-    void start_receive() {
-        // Wait asynchronously for an incoming packet
-        socket_.async_receive_from(
-            boost::asio::buffer(recv_buffer_), remote_endpoint_,
-            [this](boost::system::error_code ec, std::size_t bytes_transferred) {
-                if (ec == boost::asio::error::operation_aborted) {
-                    // Graceful exit: operation was canceled, cleanup and return
-                    return;
-                }
-
-                if (ec) {
-                    // Handle other actual network errors
-                    return;
-                }
-
-                if (bytes_transferred > 0) {
-                    process_packet(bytes_transferred);
-                }
-
-                // Immediately resume listening for other clients
-                start_receive();
-            });
-    }
-
-    void process_packet(std::size_t length) {
-        Watchdog& watchdog = Watchdog::GetInstance();
-		watchdog.CheckIn(); // Reset watchdog timer on packet receipt
-        std::string message(recv_buffer_.data(), length);
-        std::ostringstream oss;
-        oss << remote_endpoint_;
-		std::string remote_str = oss.str();
-
-        // Try to insert a new connection if not present
-        auto [it, inserted] = KnownClientConnections.emplace(remote_endpoint_, udp_connection{});
-        if (inserted) {
-            LOG(LoggerVerbosity::INFO, "New Client Connected " + remote_str);
-            auto result = message.compare(0, 10, "FILE_MODE:");
-			KnownClientConnections[remote_endpoint_].connection_time = std::chrono::system_clock::now();
-            if (result == 0) {
-				KnownClientConnections[remote_endpoint_].mode = UdpSendMode::SEND_FILE;
-				KnownClientConnections[remote_endpoint_].file_chunks.clear();
-				fs::path filePath(message.substr(10)); // Extract file name after "FILE_MODE:"
-				
-                KnownClientConnections[remote_endpoint_].file_name = filePath.filename().string(); 
-				LOG(LoggerVerbosity::INFO, remote_str + ": file_name=" + KnownClientConnections[remote_endpoint_].file_name);
-				return; // Don't process the file mode message further
-            } else {
-				KnownClientConnections[remote_endpoint_].mode = UdpSendMode::MESSAGE;
-			}
-            LOG(LoggerVerbosity::INFO, remote_str + ": mode = " +
-                std::string(magic_enum::enum_name(KnownClientConnections[remote_endpoint_].mode)));
-        }
-
-        if (KnownClientConnections[remote_endpoint_].mode == UdpSendMode::MESSAGE) {
-            LOG(LoggerVerbosity::INFO, remote_str +
-                ":MM: Received Message: " + message);
-
-            // Echo the packet back asynchronously to the sender
-            auto response_msg = std::make_shared<std::string>("Echo: " + message);
-            socket_.async_send_to(
-                boost::asio::buffer(*response_msg), remote_endpoint_,
-                [response_msg](boost::system::error_code /*ec*/, std::size_t /*bytes*/) {
-                    // Shared pointer capture keeps data alive until transmission completes
-                });
-		}
-        else if (KnownClientConnections[remote_endpoint_].mode == UdpSendMode::SEND_FILE) {
-			// FILE MODE: Expecting file chunks in the format "CHUNK:<chunk_number>:<data>"
-            std::vector<uint8_t> data(recv_buffer_.begin(), recv_buffer_.begin() + length);
-            FileTransferHeader fh = FileTransferHeader::deserialize(data);
-            LOG(LoggerVerbosity::INFO, remote_str +
-                ":FM: Received " + std::to_string(length) + " bytes" +
-				" chunkNumber=" + std::to_string(fh.chunkNumber) +
-				" chunkSize=" + std::to_string(fh.chunkSize) 
-            );
-            if (fh.chunkSize > 0) {
-                auto [cit, inserted] = 
-                    KnownClientConnections[remote_endpoint_].file_chunks.emplace(
-                        fh.chunkNumber,
-                        std::vector<uint8_t>(data.begin() + fh.GetHeaderSizeBytes(), data.end())
-                    );
-            }
-            else {
-                // End of file
-                LOG(LoggerVerbosity::INFO, remote_str +
-                    ":FM: Received EOF");
-
-				// Write the received file chunks to disk
-
-                std::string output_file = OutDir + "/" + KnownClientConnections[remote_endpoint_].file_name;
-                std::ofstream ofs(output_file, std::ios::binary);
-                if (!ofs) {
-                    LOG(LoggerVerbosity::CRITICAL, remote_str +
-                        ":FM: Error opening output file: " + output_file);
-                    return;
-                }
-                for (const auto& [chunkNum, chunkData] : KnownClientConnections[remote_endpoint_].file_chunks) {
-                    ofs.write(reinterpret_cast<const char*>(chunkData.data()), chunkData.size());
-                }
-                ofs.close();
-                LOG(LoggerVerbosity::INFO, remote_str +
-					":FM: File saved successfully to " + output_file);
-            }
-        }
-        else {
-            std::cout << "Unhandled Mode: " 
-                << std::string(magic_enum::enum_name(KnownClientConnections[remote_endpoint_].mode))
-                << " for endpoint " << remote_endpoint_ << std::endl;
-        }            
-    }
-};
 
 
 // 1. Define types using the shared memory allocator hierarchy
@@ -205,18 +63,23 @@ typedef allocator<void, SegmentManager>                                 VoidAllo
 // Allocator for StripeDequeMessage (defined below) will be declared after message is known.
 // We'll define the message's internal vector allocator alias below once message is declared.
 
+/*
 struct StripeDequeMessage; // forward declare so we can declare the deque allocator type
 typedef boost::interprocess::allocator<int, SegmentManager>                   StripeSharedDataAllocator;
 typedef boost::interprocess::allocator<StripeDequeMessage, SegmentManager>    ShStripeMsgAllocator;
 typedef boost::interprocess::deque<StripeDequeMessage, ShStripeMsgAllocator>  StripeShmDeque;
-
+*/
 // Now define the message using an interprocess vector for the payload
+/*
 enum class DeqMsgType : int {
     NOTSET = 0,
     MESSAGE = 1,
     PACKET = 2,
     EXIT_PROCESS = 3
 };
+*/
+
+/*
 struct StripeDequeMessage {
     DeqMsgType msg_type;
     int msg_length;
@@ -235,15 +98,17 @@ struct StripeDequeMessage {
     }
 };
 
+
 static std::ostream& operator<<(std::ostream& os, const StripeDequeMessage& msg) {
     os << "StripeDequeMessage{msg_type="
         << static_cast<int>(msg.msg_type)
         << ", msg_length=" << msg.msg_length
         << ", data=";
+    int msize = msg.data.size();
     if (msg.data.size() != static_cast<size_t>(msg.msg_length)) {
         os << "(Warning: msg_length does not match data size!) ";
-    }
-    if (!msg.data.empty()) {
+    } 
+    if (msg.data.size() != 0) {
         os << "[";
         for (auto it = msg.data.begin(); it != msg.data.end(); ++it) {
             os << std::to_string(static_cast<int>(*it));
@@ -257,7 +122,6 @@ static std::ostream& operator<<(std::ostream& os, const StripeDequeMessage& msg)
     os << "}";
     return os;
 }
-
 struct StripeSharedData {
     StripeShmDeque stripe_deque;
     boost::interprocess::interprocess_condition cond_nonempty;
@@ -278,7 +142,8 @@ struct StripeSharedData {
 	}
 };
 
-class StripeProcessorManager {
+
+class StripeProcessManager {
 public:
     std::string shm_name;
     size_t shm_size;
@@ -289,7 +154,7 @@ public:
     bp::v1::child stripe_process;
 	StripeSharedData* shared_data;
 
-    StripeProcessorManager(const char* shm_name_, size_t shm_size_)
+    StripeProcessManager(const char* shm_name_, size_t shm_size_)
       : shm_name(shm_name_), shm_size(shm_size_)
     {
         shared_memory_object::remove(shm_name.c_str());
@@ -302,7 +167,7 @@ public:
 
         // Create a message using the shared-memory byte allocator
         allocator<uint8_t, SegmentManager> byteAlloc(segment->get_segment_manager());
-        StripeDequeMessage msg(byteAlloc);
+        StripeDequeMessageNew msg(byteAlloc);
         msg.msg_type = DeqMsgType::MESSAGE;
         msg.msg_length = 5;
         for (uint8_t i = 0; i < msg.msg_length; ++i) {
@@ -313,11 +178,11 @@ public:
     }
 
     // Non-copyable
-    StripeProcessorManager(const StripeProcessorManager&) = delete;
-    StripeProcessorManager& operator=(const StripeProcessorManager&) = delete;
+    StripeProcessManager(const StripeProcessManager&) = delete;
+    StripeProcessManager& operator=(const StripeProcessManager&) = delete;
 
     // Movable
-    StripeProcessorManager(StripeProcessorManager&& other) noexcept
+    StripeProcessManager(StripeProcessManager&& other) noexcept
       : shm_name(std::move(other.shm_name))
       , shm_size(other.shm_size)
       , segment(std::move(other.segment))
@@ -329,7 +194,7 @@ public:
         other.shm_size = 0;
     }
 
-    StripeProcessorManager& operator=(StripeProcessorManager&& other) noexcept {
+    StripeProcessManager& operator=(StripeProcessManager&& other) noexcept {
         if (this != &other) {
             shm_name = std::move(other.shm_name);
             shm_size = other.shm_size;
@@ -349,7 +214,7 @@ public:
         stripe_process = bp::v1::child(process_invocation_str);
     }
     
-    ~StripeProcessorManager() {
+    ~StripeProcessManager() {
         if (stripe_process.running()) {
             stripe_process.terminate();
             stripe_process.wait();
@@ -360,6 +225,8 @@ public:
         shared_memory_object::remove(shm_name.c_str());
 	}
 };
+*/
+
 
 int main(int argc, char* argv[]) {
     my_logger::LoggerVerbosity verbosity = my_logger::LoggerVerbosity::ERR;
@@ -368,9 +235,7 @@ int main(int argc, char* argv[]) {
 	std::string StripeConfigFile;
     std::string ServerPort = "8080";
     std::string StripeProcessName = "";
-    std::vector<bp::v1::child> stripe_processes;
-    std::vector<StripeProcessorManager> stripe_processors;
-    
+
 	LOG_INST.verbosity = verbosity;
     //std::cout << "Program: " << argv[0] << std::endl;
 
@@ -477,7 +342,7 @@ int main(int argc, char* argv[]) {
     LOG(LoggerVerbosity::DEBUG, show_version());
     LOG(LoggerVerbosity::DEBUG, "*** Setting DEFAULT command line arguments...***");
     CLP.SetDefaultValues();
-    LOG(LoggerVerbosity::DEBUG, "\*** Parsing command line arguments...***");
+    LOG(LoggerVerbosity::DEBUG, "*** Parsing command line arguments...***");
     CLP.ProcessArguments(argc, argv);
 
 	// Validate output directory exists
@@ -517,6 +382,8 @@ int main(int argc, char* argv[]) {
 	LOG(LoggerVerbosity::CRITICAL, "Striper Mode: " + std::string(magic_enum::enum_name(StriperMode)));
     if (!StripeProcessName.empty()) {
 		// This is a Stripe Processor, not the main UDP server
+
+        /*
         LOG(LoggerVerbosity::INFO, "This is a Stripe Processor: " + StripeProcessName);
         managed_shared_memory segment(open_only, StripeProcessName.c_str());
         // Find the named deque instance
@@ -537,59 +404,25 @@ int main(int argc, char* argv[]) {
         else {
 			LOG(LoggerVerbosity::ERR, "Deque object not found in shared memory for Stripe Process: " + StripeProcessName);
         }
+        */
+        StripeProcess(StripeProcessName);
 		watchdog.StopMonitoring();
-	}
-	else { // Main UDP Server
+	} else { 
+        // Main UDP Server
         if (StriperEnable) {
 			// Striping is enabled so create the Stripe Processor processes
+            std::string process_args = " --striper_config " + StripeConfigFile;
+            process_args += " --verbosity " + std::string(magic_enum::enum_name(verbosity));
+            process_args += " --watchdog " + std::to_string(WatchdogTimeout);
 
-            for (int sid = 0; sid < StriperConfig.schedulerCfg.MaxNumberStripes; ++sid) {
-                std::string process_name = "Stripe-" + std::to_string(sid);
-                std::string process_path = argv[0];
-                std::string process_args = " -x " + process_name + " --striper_config " + StripeConfigFile + " -l " + process_name + ".log";
-				process_args += " --verbosity " + std::string(magic_enum::enum_name(verbosity));
-				process_args += " --watchdog " + std::to_string(WatchdogTimeout);
-                if (StriperMode == StriperModeE::RECEIVER) {
-                    process_args += " --rx_striper";
-                }
-                else if (StriperMode == StriperModeE::TRANSMITTER) {
-                    process_args += " --tx_striper";
-				}
-
-                LOG(LoggerVerbosity::INFO, "Starting Stripe Process: " + process_name + " at path: " + process_path + " with args: " + process_args);
-                
-                try {
-					StripeProcessorManager sp(process_name.c_str(), 65536); // 64KB shared memory for each stripe
-                    sp.startStripeProcess(process_path + process_args);
-                    stripe_processors.emplace_back(std::move(sp));
-                }
-                catch (const std::exception& e) {
-                    LOG(LoggerVerbosity::CRITICAL, "Failed to start Stripe Process: " + process_name + ". Error: " + e.what());
-                    exit(500);
-                }
-
-            }
-            LOG(LoggerVerbosity::INFO, "All child processes spawned and running in parallel...");
-
-            // 2. Wait for each process to finish to avoid zombie processes
-            for (auto& sp : stripe_processors) {
-                sp.stripe_process.wait();
-                LOG(my_logger::LoggerVerbosity::CRITICAL, "Child process with PID " + std::to_string(sp.stripe_process.id()) + " exited with code: "
-                    + std::to_string(sp.stripe_process.exit_code()));
-            }
-
-                //try {
-                //    //stripe_processes.emplace_back(bp::process(ctx, process_path, process_args, bstdio));
-                //} catch (const std::exception& e) {
-                //    LOG(LoggerVerbosity::CRITICAL, "Failed to start Stripe Process: " + process_name + ". Error: " + e.what());
-                //    exit(500);
-                //}
-			//}
+            StripesManager stripesMgr(StriperConfig);
+            stripesMgr.Initialize(StriperMode, argv[0], process_args);
+            stripesMgr.WaitForComplete();
 		}
         try {
             boost::asio::io_context io_context;
             short port = static_cast<short>(std::stoi(ServerPort));
-            UdpServer server(io_context, port);
+            UdpServer server(io_context, port, OutDir);
         
             std::cout << "\nUDP Server running on port " << ServerPort << "..." << std::endl;
             watchdog.SetOnTimeoutCallback([&server]() {
@@ -606,6 +439,5 @@ int main(int argc, char* argv[]) {
     // Wait for threads to join
     LOG(LoggerVerbosity::INFO, "Waiting threads to join...");
     TM.WaitAllThreads(); // Wait for all threads to finish
-	stripe_processes.clear(); // Clear the vector of child processes
     return 0;
 }

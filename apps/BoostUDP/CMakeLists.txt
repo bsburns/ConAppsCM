@@ -13,7 +13,7 @@ find_package(Boost REQUIRED COMPONENTS filesystem)
 # Include Boost headers
 #include_directories("C:\\local\\boost_1_91_0\\boost")
 
-add_executable(bUDPS bUDP-Server.cpp)
+add_executable(bUDPS bUDP-Server.cpp bStripes.cpp)
 
 target_include_directories(bUDPS
     PUBLIC

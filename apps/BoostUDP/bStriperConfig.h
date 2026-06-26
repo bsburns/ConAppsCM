@@ -42,13 +42,18 @@ struct StripeConfig {
     bool AutoFillEnable = false;        // Enable Auto fill, if packet rate drops below TargetPacketRate_pps
     double AbsMaxPacketRate_pps = 0;    // Absolute maximum packet Rate that a stripe can generate
 	double MinPacketRate_pps = 0;       // Once actual Rate drops below this amount inject fill packets to maintain this rate
+    int StartUdpSrcPortNumber = 100;    // Starting UDP Source Port number for first Stripe (Stripe number == Source Port - this value)
+    int StartUdpDstPortNumber =5'000;   // DPORT= N>5000(even), Col FEC=N+2 Row FEC=N+4
 };
 NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(StripeConfig,
     Mode,
     Parm_L_cols,
     Parm_D_rows,
     AbsMaxPacketRate_pps,
-    MinPacketRate_pps)
+    MinPacketRate_pps,
+    StartUdpSrcPortNumber,
+    StartUdpDstPortNumber
+    )
 
 struct SchedulerConfig {
     SchedulerMode Mode = SchedulerMode::DYNAMIC_STRIPES;
