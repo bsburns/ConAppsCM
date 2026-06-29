@@ -11,6 +11,8 @@
 
 #define VERSION "0.1"
 
+#include <stdexcept>
+#include <climits>
 #include <set>
 #include <map>
 #include <filesystem>
@@ -27,6 +29,8 @@
 #include "logger.h"
 #include "watchdog.h"
 #include "threadManager.h"
+#include "bStripes.h"
+#include "PacketHeader/PacketHeader.h"
 
 using boost::asio::ip::udp;
 using namespace my_logger;
@@ -165,8 +169,11 @@ public:
 class UdpServer {
 public:
     // Bind to the given port on all available network interfaces
-    UdpServer(boost::asio::io_context& io_context, short port, std::string out_dir_)
-        : socket_(io_context, udp::endpoint(udp::v4(), port)) 
+    UdpServer(boost::asio::io_context& io_context, short port_, std::string out_dir_, StripesManager *stripes_mgr_, StriperModeE striper_mode_)
+        : socket_(io_context, udp::endpoint(udp::v4(), port_))
+        , port(port_)
+        , stripesMgr(stripes_mgr_)
+        , StriperMode(striper_mode_)
         , out_dir(out_dir_)
     {
         start_receive();
@@ -177,6 +184,9 @@ public:
         socket_.cancel(ec);
     }
 private:
+    StripesManager* stripesMgr = nullptr;
+    StriperModeE StriperMode;
+    short port;
     std::string out_dir; // Directory where receved files will be saved
     udp::socket socket_;
     udp::endpoint remote_endpoint_;
@@ -259,33 +269,66 @@ private:
                 " chunkNumber=" + std::to_string(fh.chunkNumber) +
                 " chunkSize=" + std::to_string(fh.chunkSize)
             );
-            if (fh.chunkSize > 0) {
-                auto [cit, inserted] =
-                    KnownClientConnections[remote_endpoint_].file_chunks.emplace(
-                        fh.chunkNumber,
-                        std::vector<uint8_t>(data.begin() + fh.GetHeaderSizeBytes(), data.end())
-                    );
-            }
-            else {
-                // End of file
-                LOG(LoggerVerbosity::INFO, remote_str +
-                    ":FM: Received EOF");
+            if (StriperMode == StriperModeE::TRANSMITTER) {
+                LOG(LoggerVerbosity::INFO, "Packetizing received data to send to striper");
+                // convert to packet format
+                auto pkt = std::make_unique<Packet>(data);
+                auto udpHdr = std::make_shared<PacketHeaderUDP>();
+                auto pos = remote_str.find(":", 0);
+                
+                if (pos != std::string::npos) {
+                    try {
+                        unsigned long parsed = std::stoul(remote_str.substr(pos + 1));
 
-                // Write the received file chunks to disk
+                        if (parsed > UINT16_MAX) {
+                            throw std::out_of_range("Value exceeds 16-bit unsigned range");
+                        }
 
-                std::string output_file = out_dir + "/" + KnownClientConnections[remote_endpoint_].file_name;
-                std::ofstream ofs(output_file, std::ios::binary);
-                if (!ofs) {
-                    LOG(LoggerVerbosity::CRITICAL, remote_str +
-                        ":FM: Error opening output file: " + output_file);
-                    return;
+                        udpHdr->srcPort = static_cast<uint16_t>(parsed);
+                    }
+                    catch (const std::invalid_argument& e) {
+                        std::cout << "Error: Not a valid number.\n";
+                        udpHdr->srcPort = 0xFFFF;
+                    }
+                    catch (const std::out_of_range& e) {
+                        std::cout << "Error: Out of range.\n";
+                        udpHdr->srcPort = 0xFFFE;
+                    }
                 }
-                for (const auto& [chunkNum, chunkData] : KnownClientConnections[remote_endpoint_].file_chunks) {
-                    ofs.write(reinterpret_cast<const char*>(chunkData.data()), chunkData.size());
+                udpHdr->dstPort = port;
+                udpHdr->length = udpHdr->Size() + data.size();
+                pkt->AddHeader(udpHdr);
+                LOG(LoggerVerbosity::INFO, "Add UDP header: " + udpHdr->to_string());
+
+            } else {
+                if (fh.chunkSize > 0) {
+                    auto [cit, inserted] =
+                        KnownClientConnections[remote_endpoint_].file_chunks.emplace(
+                            fh.chunkNumber,
+                            std::vector<uint8_t>(data.begin() + fh.GetHeaderSizeBytes(), data.end())
+                        );
                 }
-                ofs.close();
-                LOG(LoggerVerbosity::INFO, remote_str +
-                    ":FM: File saved successfully to " + output_file);
+                else {
+                    // End of file
+                    LOG(LoggerVerbosity::INFO, remote_str +
+                        ":FM: Received EOF");
+
+                    // Write the received file chunks to disk
+
+                    std::string output_file = out_dir + "/" + KnownClientConnections[remote_endpoint_].file_name;
+                    std::ofstream ofs(output_file, std::ios::binary);
+                    if (!ofs) {
+                        LOG(LoggerVerbosity::CRITICAL, remote_str +
+                            ":FM: Error opening output file: " + output_file);
+                        return;
+                    }
+                    for (const auto& [chunkNum, chunkData] : KnownClientConnections[remote_endpoint_].file_chunks) {
+                        ofs.write(reinterpret_cast<const char*>(chunkData.data()), chunkData.size());
+                    }
+                    ofs.close();
+                    LOG(LoggerVerbosity::INFO, remote_str +
+                        ":FM: File saved successfully to " + output_file);
+                }
             }
         }
         else {
@@ -298,14 +341,17 @@ private:
 
 class Debugger {
 public:
-
     Debugger() {}
-    static void Launch() {
+    static void Launch(uint32_t WaitDebugAttachIterations) {
         // No-op stub for cross-platform compatibility.
         // On Windows, you could add: __debugbreak(); or DebugBreak();
         // On other platforms, you might use raise(SIGTRAP);
         // For now, just print a message.
-        std::cout << "[Debugger] Launch called (no-op stub)." << std::endl;
+        if (WaitDebugAttachIterations == 0) {
+            std::cout << "\n[Debugger]: Launch called, but wait set to 0!!";
+            return;
+        }
+        std::cout << "\n[Debugger]: Launch called (no-op stub).";
         uint32_t pid = 1234;
 #ifdef _WIN32
         DWORD dpid = GetCurrentProcessId();
@@ -315,13 +361,13 @@ public:
 #endif
 
         ThreadManager& TM = ThreadManager::GetInstance();
-        for (int i = 0; i < 100 && !TM.force_stop; i++) {
+        for (uint32_t i = 0; i < WaitDebugAttachIterations && !TM.force_stop; i++) {
             // Note this is a delay loop to allow time to Attach Debugger to this process
             // Once attached, you can set i=101 in debugger to exit delay loop
 
 
             // Pause execution for 1 second
-            std::cout << "Waiting for debuuger to attach:" << " pid=" << pid << " iter=" << i << "\n";
+            std::cout << "\n[Debugger]: Waiting for debugger to attach:" << " pid=" << pid << " iter=" << i;
             std::this_thread::sleep_for(std::chrono::seconds(2));
         }
     }

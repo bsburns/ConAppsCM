@@ -48,13 +48,18 @@ public:
 
     // Deserialization function
     virtual std::unique_ptr<PacketHeaderBase> deserialize(const std::vector<uint8_t>& data) = 0;
+
+	virtual uint32_t Size() const = 0;
+
+	virtual std::string to_string() const = 0;
+
 	virtual ~PacketHeaderBase() = default;
 };
 
 class PacketHeaderTCP : public PacketHeaderBase {
 public:
-	uint16_t sourcePort;
-	uint16_t destPort;
+	uint16_t srcPort;
+	uint16_t dstPort;
 	uint32_t sequenceNumber;
 	uint32_t acknowledgmentNumber;
 	uint8_t dataOffset; // 4 bits
@@ -66,12 +71,12 @@ public:
 		packetType = PacketHeaderType::TCP;
 	}
 	std::vector<uint8_t> serialize() const override {
-		std::vector<uint8_t> data(20); // TCP header is typically 20 bytes
+		std::vector<uint8_t> data(Size()); // TCP header is typically 20 bytes
 		// Serialize fields into byte vector (big-endian)
-		data[0] = sourcePort >> 8;
-		data[1] = sourcePort & 0xFF;
-		data[2] = destPort >> 8;
-		data[3] = destPort & 0xFF;
+		data[0] = srcPort >> 8;
+		data[1] = srcPort & 0xFF;
+		data[2] = dstPort >> 8;
+		data[3] = dstPort & 0xFF;
 		data[4] = sequenceNumber >> 24;
 		data[5] = (sequenceNumber >> 16) & 0xFF;
 		data[6] = (sequenceNumber >> 8) & 0xFF;
@@ -91,12 +96,12 @@ public:
 	}
 	
 	std::unique_ptr<PacketHeaderBase> deserialize(const std::vector<uint8_t>& data) override {
-		if (data.size() < 20) {
+		if (data.size() < Size()) {
 			throw std::invalid_argument("Data too short for TCP header");
 		}
 		auto header = std::make_unique<PacketHeaderTCP>();
-		header->sourcePort = (data[0] << 8) | data[1];
-		header->destPort = (data[2] << 8) | data[3];
+		header->srcPort = (data[0] << 8) | data[1];
+		header->dstPort = (data[2] << 8) | data[3];
 		header->sequenceNumber = (data[4] << 24) | (data[5] << 16) | (data[6] << 8) | data[7];
 		header->acknowledgmentNumber = (data[8] << 24) | (data[9] << 16) | (data[10] << 8) | data[11];
 		header->dataOffset = data[12] >> 4;
@@ -106,23 +111,34 @@ public:
 		header->urgentPointer = (data[17] << 8) | data[18];
 		return header;
 	}
+	
+	uint32_t Size() const override { return 20; }
+
+	std::string to_string() const override {
+		std::string str = "TCP={";
+		str += "SrcPort=" + std::to_string(srcPort);
+		str += ", DstPort=" + std::to_string(dstPort);
+		str += ", Seq=" + std::to_string(sequenceNumber);
+		str += "}";
+		return str;
+	}
 };
 
 class PacketHeaderUDP : public PacketHeaderBase {
 public:
-	uint16_t sourcePort;
-	uint16_t destPort;
+	uint16_t srcPort;
+	uint16_t dstPort;
 	uint16_t length;
-	uint16_t checksum;
+	uint16_t checksum = 0;
 	PacketHeaderUDP() {
 		packetType = PacketHeaderType::UDP;
 	}
 	std::vector<uint8_t> serialize() const override {
-		std::vector<uint8_t> data(8); // UDP header is 8 bytes
-		data[0] = sourcePort >> 8;
-		data[1] = sourcePort & 0xFF;
-		data[2] = destPort >> 8;
-		data[3] = destPort & 0xFF;
+		std::vector<uint8_t> data(Size()); // UDP header is 8 bytes
+		data[0] = srcPort >> 8;
+		data[1] = srcPort & 0xFF;
+		data[2] = dstPort >> 8;
+		data[3] = dstPort & 0xFF;
 		data[4] = length >> 8;
 		data[5] = length & 0xFF;
 		data[6] = checksum >> 8;
@@ -130,15 +146,25 @@ public:
 		return data;
 	}
 	std::unique_ptr<PacketHeaderBase> deserialize(const std::vector<uint8_t>& data) override {
-		if (data.size() < 8) {
+		if (data.size() < Size()) {
 			throw std::invalid_argument("Data too short for UDP header");
 		}
 		auto header = std::make_unique<PacketHeaderUDP>();
-		header->sourcePort = (data[0] << 8) | data[1];
-		header->destPort = (data[2] << 8) | data[3];
+		header->srcPort = (data[0] << 8) | data[1];
+		header->dstPort = (data[2] << 8) | data[3];
 		header->length = (data[4] << 8) | data[5];
 		header->checksum = (data[6] << 8) | data[7];
 		return header;
+	}
+	uint32_t Size() const override { return 8; }
+
+	std::string to_string() const override {
+		std::string str = "UDP={";
+		str += "SrcPort=" + std::to_string(srcPort);
+		str += ", DstPort=" + std::to_string(dstPort);
+		str += ", len=" + std::to_string(length);
+		str += "}";
+		return str;
 	}
 };
 
@@ -158,7 +184,7 @@ public:
 		packetType = PacketHeaderType::RTP;
 	}
 	std::vector<uint8_t> serialize() const override {
-		std::vector<uint8_t> data(12); // RTP header is 12 bytes
+		std::vector<uint8_t> data(Size()); // RTP header is 12 bytes
 		data[0] = (version << 6) | (padded << 5) | (extension << 4) | (CSRC_Count & 0xF);
 		data[1] = (marker << 7) | (payload_type & 0x7F);
 		data[2] = sequence_number >> 8;
@@ -174,7 +200,7 @@ public:
 		return data;
 	}
 	std::unique_ptr<PacketHeaderBase> deserialize(const std::vector<uint8_t>& data) override {
-		if (data.size() < 12) {
+		if (data.size() < Size()) {
 			throw std::invalid_argument("Data too short for RTP header");
 		}
 		auto header = std::make_unique<PacketHeaderRTP>();
@@ -189,6 +215,14 @@ public:
 		header->sync_src = data[8] << 24 | data[9] << 16 | data[10] << 8 | data[11];
 		return header;
 	}
+	uint32_t Size() const override { return 12; }
+
+	std::string to_string() const override {
+		std::string str = "RTP={";
+		str += "}";
+		return str;
+	}
+
 };
 
 class PacketHeaderSMPTE : public PacketHeaderBase {
@@ -214,7 +248,7 @@ public:
 	}
 
 	std::vector<uint8_t> serialize() const override {
-		std::vector<uint8_t> data(16); // SMPTE header is 16 bytes
+		std::vector<uint8_t> data(Size()); // SMPTE header is 16 bytes
 		data[0] = (extension << 7) | (reserved << 6) | (padding_recovery << 5) | (extension_recovery << 4) | (CSRC_recovery & 0xF);
 		data[1] = (marker_recovery << 7) | (payload_type_recovery & 0x7F);
 		data[2] = sequence_base >> 8;
@@ -235,7 +269,7 @@ public:
 		return data;
 	}
 	std::unique_ptr<PacketHeaderBase> deserialize(const std::vector<uint8_t>& data) override {
-		if (data.size() < 16) {
+		if (data.size() < Size()) {
 			throw std::invalid_argument("Data too short for SMPTE header");
 		}
 		auto header = std::make_unique<PacketHeaderSMPTE>();
@@ -258,16 +292,43 @@ public:
 		return header;
 	}
 
+	uint32_t Size() const override { return 16; }
 
-
+	std::string to_string() const override {
+		std::string str = "SMPTE={";
+		str += "}";
+		return str;
+	}
 };
 
 class Packet {
 public:
-	std::vector<PacketHeaderBase> headers;
+	uint32_t length = 0;
+	std::vector<std::shared_ptr<PacketHeaderBase>> headers;
 	std::vector<uint8_t> data;
 	Packet() {
 		headers.clear();
 		data.clear();
+	}
+	Packet(std::vector<uint8_t> data_)
+		: data(std::move(data_))
+	{
+		length = data.size();
+	}
+
+	void AddHeader(std::shared_ptr<PacketHeaderBase> hdr, int position = 0) {
+		if (position == 0) {
+			headers.insert(headers.begin(), hdr);
+		} else if (position == -1) {
+			headers.emplace_back(hdr);
+		} else {
+			if (position > 0 && position < headers.size()) {
+				headers.insert(headers.begin() + position, hdr);
+			} else {
+				std::cerr << "Header Insertion location out of range: loc="
+					<< position << " MaxPosition=" << headers.size() - 1;
+			}
+		}
+		length += hdr->Size();
 	}
 };

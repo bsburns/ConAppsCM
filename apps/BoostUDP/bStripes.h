@@ -11,6 +11,8 @@
  */
 
 #include <memory> // for std::unique_ptr
+#include <boost/interprocess/managed_shared_memory.hpp>
+#include "bStriperConfig.h"
 
 enum class StriperModeE : int {
     NOTSET = 0,
@@ -37,14 +39,17 @@ public:
     StripesManager(AllStriperConfig* striper_config_);
     ~StripesManager();
 
-    int Initialize(StriperModeE mode_, std::string path_, std::string args_);
-    void WaitForComplete();
 
     // Rule of five (disable copy, allow move)
     StripesManager(const StripesManager&) = delete;
     StripesManager& operator=(const StripesManager&) = delete;
     StripesManager(StripesManager&&) noexcept;
     StripesManager& operator=(StripesManager&&) noexcept;
+
+    int Initialize(StriperModeE mode_, std::string path_, std::string args_);
+    void SendMessage(std::string msg, int stripe_num=-1); // stripe_num == -1 means all stripes
+    void SendExit(int stripe_num = -1); // stripe_num == -1 means all stripes
+    void WaitForComplete();
 
 private:
     std::unique_ptr<StripesManagerImpl> impl; // Pointer to hidden implementation
@@ -53,6 +58,7 @@ private:
 class StripeProcess {
 private:
     std::string name;
+    boost::interprocess::managed_shared_memory segment;
 
 public:
     StripeProcess() = delete;
@@ -64,4 +70,5 @@ public:
 
     StripeProcess(StripeProcess&&) noexcept;
     StripeProcess& operator=(StripeProcess&&) noexcept;
+
 };

@@ -111,7 +111,7 @@ enum class LoggerVerbosity : int {
 			CloseLogFile();
 		}
 
-		LoggerVerbosity GetVerbosity() { return verbosity;  }
+		int GetVerbosity() { return (int) verbosity;  }
 
 		static MyLogger& GetInstance() {
 			static MyLogger instance; // Guaranteed to be destroyed and instantiated on first use

@@ -29,6 +29,8 @@
 #include "logger.h"
 #include "bStriperConfig.h"
 #include "bStripes.h"
+#include "threadManager.h"
+#include "watchdog.h"
 
 using namespace boost::interprocess;
 namespace bp = boost::process;
@@ -70,7 +72,7 @@ struct StripeDequeMessageNew {
     
 static std::ostream& operator<<(std::ostream& os, const StripeDequeMessageNew& msg) {
     os << "StripeDequeMessage{msg_type="
-        << static_cast<int>(msg.msg_type)
+        << std::string(magic_enum::enum_name(msg.msg_type))
         << ", msg_length=" << msg.msg_length
         << ", data=";
     int msize = msg.data.size();
@@ -78,12 +80,27 @@ static std::ostream& operator<<(std::ostream& os, const StripeDequeMessageNew& m
         os << "(Warning: msg_length does not match data size!) ";
     }
     if (msg.data.size() != 0) {
-        os << "[";
-        for (auto it = msg.data.begin(); it != msg.data.end(); ++it) {
-            os << std::to_string(static_cast<int>(*it));
-            if (std::next(it) != msg.data.end()) os << ", ";
+        auto count = 10;
+        switch (msg.msg_type) {
+        case DeqMsgType::MESSAGE:
+            os << " [";
+            for (auto it = msg.data.begin(); it != msg.data.end(); ++it) {
+                os << static_cast<char>(*it);
+            }
+            os << "]";
+            break;
+        case DeqMsgType::PACKET:
+            os << " Packet: [";
+            for (auto it = msg.data.begin(); it != msg.data.end() && count; ++it, --count) {
+                os << std::to_string(static_cast<int>(*it));
+                if (std::next(it) != msg.data.end() || count != 1) os << ", ";
+            }
+            os << "]";
+
+            break;
+        case DeqMsgType::EXIT_PROCESS:
+            break;
         }
-        os << "]";
     }
     else {
         os << "[]";
@@ -92,6 +109,9 @@ static std::ostream& operator<<(std::ostream& os, const StripeDequeMessageNew& m
     return os;
 }
 
+// Data stucture to share data between Main process 
+// (StripesMangager) and indidividual stripe processes 
+// (StripeProcessManager) 
 struct StripeSharedData {
     StripeShmDeque stripe_deque;
     boost::interprocess::interprocess_condition cond_nonempty;
@@ -112,6 +132,7 @@ struct StripeSharedData {
     }
 };
 
+// Class to manage an individual stripe process
 class StripeProcessManager {
 public:
     std::string shm_name;
@@ -131,19 +152,7 @@ public:
             boost::interprocess::create_only, shm_name.c_str(), shm_size);
 
         shared_data = segment->construct<StripeSharedData>("SharedData")(segment->get_segment_manager());
-        //ShStripeMsgAllocator alloc_inst(segment->get_segment_manager());
-        //stripe_deque = segment->construct<StripeShmDeque>("SharedDeque")(alloc_inst);
-
-        // Create a message using the shared-memory byte allocator
-        allocator<uint8_t, SegmentManager> byteAlloc(segment->get_segment_manager());
-        StripeDequeMessageNew msg(byteAlloc);
-        msg.msg_type = DeqMsgType::MESSAGE;
-        msg.msg_length = 5;
-        for (uint8_t i = 0; i < msg.msg_length; ++i) {
-            msg.data.push_back(i * 10);
-        }
-        shared_data->stripe_deque.push_back(msg);
-        shared_data->cond_nonempty.notify_one();
+        SendMessage("Hello");
     }
 
     // Non-copyable
@@ -183,6 +192,35 @@ public:
         stripe_process = bp::v1::child(process_invocation_str);
     }
 
+    void SendMessage(std::string message) {
+        // Create a message using the shared-memory byte allocator
+        allocator<uint8_t, SegmentManager> byteAlloc(segment->get_segment_manager());
+        StripeDequeMessageNew msg(byteAlloc);
+        std::string send_msg = "(" + shm_name + "): " + message;
+        msg.msg_type = DeqMsgType::MESSAGE;
+        msg.msg_length = send_msg.size();
+        //msg.data.emplace_back(message.begin(), message.end());
+        for (uint8_t i = 0; i < msg.msg_length; ++i) {
+            msg.data.push_back(send_msg[i]);
+        }
+        shared_data->mutex.lock();
+        shared_data->stripe_deque.push_back(msg);
+        shared_data->mutex.unlock();
+        shared_data->cond_nonempty.notify_one();
+    }
+
+    void SendExit() {
+        // Create a message using the shared-memory byte allocator
+        allocator<uint8_t, SegmentManager> byteAlloc(segment->get_segment_manager());
+        StripeDequeMessageNew msg(byteAlloc);
+        msg.msg_type = DeqMsgType::EXIT_PROCESS;
+        msg.msg_length = 0;
+        shared_data->mutex.lock();
+        shared_data->stripe_deque.push_back(msg);
+        shared_data->mutex.unlock();
+        shared_data->cond_nonempty.notify_one();
+    }
+
     ~StripeProcessManager() {
         if (stripe_process.running()) {
             stripe_process.terminate();
@@ -215,8 +253,8 @@ public:
         if (mode == StriperModeE::RECEIVER) {
             process_args += " --rx_striper";
         }
-         else if (mode == StriperModeE::TRANSMITTER) {
-        process_args += " --tx_striper";
+        else if (mode == StriperModeE::TRANSMITTER) {
+            process_args += " --tx_striper";
         }
 
         for (int sid = 0; sid < striperConfig->schedulerCfg.MaxNumberStripes; ++sid) {
@@ -226,9 +264,9 @@ public:
             LOG(LoggerVerbosity::INFO, "Starting Stripe Process: " + process_name + " at path: " + process_path + " with args: " + process_args);
 
             try {
-                StripeProcessManager sp(process_name.c_str(), 65536); // 64KB shared memory for each stripe
-                sp.startStripeProcess(process_path + stripe_args);
-                stripe_processors.emplace_back(std::move(sp));
+                StripeProcessManager spm(process_name.c_str(), 65536); // 64KB shared memory for each stripe
+                spm.startStripeProcess(process_path + stripe_args);
+                stripe_processors.emplace_back(std::move(spm));
             }
             catch (const std::exception& e) {
                 LOG(LoggerVerbosity::CRITICAL, "Failed to start Stripe Process: " + process_name + ". Error: " + e.what());
@@ -237,6 +275,35 @@ public:
 
         }
         LOG(LoggerVerbosity::INFO, "All child processes spawned and running in parallel...");
+    }
+
+    void SendMessage(std::string msg, int stripe_num=-1) {
+        if (stripe_num == -1) {
+            for (auto& sp : stripe_processors) {
+                sp.SendMessage(msg);
+            }
+        } else {
+            if (stripe_num >= stripe_processors.size()) {
+                LOG(LoggerVerbosity::ERR, "Trying to send to invalid stripe, num=" + std::to_string(stripe_num));
+                return;
+            }
+            stripe_processors[stripe_num].SendMessage(msg);
+        }
+    }
+
+    void SendExit(int stripe_num=-1) {
+        if (stripe_num == -1) {
+            for (auto& sp : stripe_processors) {
+                sp.SendExit();
+            }
+        }
+        else {
+            if (stripe_num >= stripe_processors.size()) {
+                LOG(LoggerVerbosity::ERR, "Trying to send to invalid stripe, num=" + std::to_string(stripe_num));
+                return;
+            }
+            stripe_processors[stripe_num].SendExit();
+        }
     }
     
     void WaitForCompleteInternal() {
@@ -261,32 +328,74 @@ int StripesManager::Initialize(StriperModeE mode_, std::string path_, std::strin
     return impl->InitializeInternal(mode_, path_, args_);
 }
 
+void StripesManager::SendMessage(std::string msg, int stripe_num) { // stripe_num == -1 means all stripes
+    return impl->SendMessage(msg, stripe_num);
+}
+
+void StripesManager::SendExit(int stripe_num) { // stripe_num == -1 means all stripes
+    return impl->SendExit(stripe_num);
+}
+
 void StripesManager::WaitForComplete() {
     return impl->WaitForCompleteInternal();
 }
 
-StripeProcess::StripeProcess(std::string name_) : name(name_) {
+// Class Stripe Process Methods
+StripeProcess::StripeProcess(std::string name_) 
+    : name(name_) 
+    , segment(boost::interprocess::managed_shared_memory(open_only, name.c_str()))
+{
     LOG(LoggerVerbosity::INFO, "This is a Stripe Processor: " + name);
 
-    managed_shared_memory segment(open_only, name.c_str());
+    //segment = managed_shared_memory(open_only, name.c_str());
 
-    // Find the named deque instance
-    std::pair<StripeSharedData*, managed_shared_memory::handle_t> res =
-        segment.find<StripeSharedData>("SharedData");
-    if (res.first != nullptr) {
-        StripeSharedData* my_data = res.first;
 
-        // Read and pop elements from the deque
-        LOG(LoggerVerbosity::INFO, "Found deque with " + std::to_string(my_data->stripe_deque.size()) + " elements.");
-        while (!my_data->stripe_deque.empty()) {
-            std::stringstream ss;
-            ss << my_data->stripe_deque.front();
-            LOG(LoggerVerbosity::INFO, "Popped: " + ss.str());
-            my_data->stripe_deque.pop_front();
+    ThreadManager& TM = ThreadManager::GetInstance();
+    Watchdog& watchdog = Watchdog::GetInstance();
+
+    TM.StartThread("MonitorDequeue-"+name, [this, &TM, &watchdog]() {
+        boost::interprocess::managed_shared_memory local_segment(open_only, this->name.c_str());
+        // Find the named deque instance
+        std::pair<StripeSharedData*, managed_shared_memory::handle_t> res =
+            local_segment.find<StripeSharedData>("SharedData");
+        if (res.first != nullptr) {
+            StripeSharedData* my_data = res.first;
+
+            // Read and pop elements from the deque
+            LOG(LoggerVerbosity::INFO, "Found deque with " + std::to_string(my_data->stripe_deque.size()) + " elements.");
+            bool exit_loop = false;
+            while (!exit_loop && !TM.force_stop) {
+                bool msg_available;
+                scoped_lock<interprocess_mutex> lock(my_data->mutex);
+                my_data->cond_nonempty.wait(lock, [&]() {
+                    return !my_data->stripe_deque.empty();
+                    });
+
+                // Deque Not empty
+                watchdog.CheckIn();
+                while (!my_data->stripe_deque.empty()) {
+                    StripeDequeMessageNew msg = my_data->stripe_deque.front();
+                    switch (msg.msg_type) {
+                    case DeqMsgType::MESSAGE:
+                        break;
+                    case DeqMsgType::PACKET:
+                        break;
+                    case DeqMsgType::EXIT_PROCESS:
+                        exit_loop = true;
+                        LOG(LoggerVerbosity::CRITICAL, "[" + name + "]: Received Exit command");
+                        break;
+                    }
+                    std::stringstream ss;
+                    ss << msg;
+                    LOG(LoggerVerbosity::INFO, "Popped: " + ss.str());
+                    my_data->stripe_deque.pop_front();
+                }
+            }
         }
-    }
-    else {
-        LOG(LoggerVerbosity::ERR, "Deque object not found in shared memory for Stripe Process: " + name);
-    }
+        else {
+            LOG(LoggerVerbosity::ERR, "Deque object not found in shared memory for Stripe Process: " + name);
+        }
+        });
 }
+
 

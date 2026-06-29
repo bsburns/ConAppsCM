@@ -110,7 +110,7 @@ public:
 						);
 						LOG(LoggerVerbosity::CRITICAL, "WARNING: Watchdog timer is about to expire in "
 							+ std::to_string(GetInstance().timeout_s - deltaTime.count()) 
-							+ " seconds : Watchdog Tome=" + std::to_string(deltaTime.count()) 
+							+ " seconds : Watchdog Time=" + std::to_string(deltaTime.count()) 
 							+ " TO=" + std::to_string(GetInstance().timeout_s)
 						);
 					}

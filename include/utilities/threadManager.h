@@ -57,6 +57,7 @@ public:
 
 	void WaitAllThreads() {
 		for (auto& [name, thread] : threads) {
+			LOG(my_logger::LoggerVerbosity::CRITICAL, "Waiting for thread: " + name);
 			if (thread.joinable()) {
 				thread.join();
 				LOG(my_logger::LoggerVerbosity::INFO, "Thread \"" + name + "\" has been joined successfully.");
