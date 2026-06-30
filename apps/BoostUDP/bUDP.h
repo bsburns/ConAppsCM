@@ -169,7 +169,7 @@ public:
 class UdpServer {
 public:
     // Bind to the given port on all available network interfaces
-    UdpServer(boost::asio::io_context& io_context, short port_, std::string out_dir_, StripesManager *stripes_mgr_, StriperModeE striper_mode_)
+    UdpServer(boost::asio::io_context& io_context, short port_, std::string out_dir_, std::shared_ptr<StripesManager> stripes_mgr_, StriperModeE striper_mode_)
         : socket_(io_context, udp::endpoint(udp::v4(), port_))
         , port(port_)
         , stripesMgr(stripes_mgr_)
@@ -184,13 +184,13 @@ public:
         socket_.cancel(ec);
     }
 private:
-    StripesManager* stripesMgr = nullptr;
+    std::shared_ptr<StripesManager> stripesMgr;
     StriperModeE StriperMode;
     short port;
     std::string out_dir; // Directory where receved files will be saved
     udp::socket socket_;
     udp::endpoint remote_endpoint_;
-    std::array<char, 4096> recv_buffer_;
+    std::vector<uint8_t> recv_buffer_{ std::vector<uint8_t>(4096, 0) };
     std::set<udp::endpoint> known_clients_; // Active client registry
     std::map<udp::endpoint, udp_connection> KnownClientConnections; // Map of client endpoints to their connection info
 
@@ -217,18 +217,20 @@ private:
                 start_receive();
             });
     }
+    
 
     void process_packet(std::size_t length) {
         Watchdog& watchdog = Watchdog::GetInstance();
         watchdog.CheckIn(); // Reset watchdog timer on packet receipt
-        std::string message(recv_buffer_.data(), length);
         std::ostringstream oss;
         oss << remote_endpoint_;
         std::string remote_str = oss.str();
+        std::string message = "";
 
         // Try to insert a new connection if not present
         auto [it, inserted] = KnownClientConnections.emplace(remote_endpoint_, udp_connection{});
         if (inserted) {
+            message = std::string(reinterpret_cast<const char*>(recv_buffer_.data()), length);
             LOG(LoggerVerbosity::INFO, "New Client Connected " + remote_str);
             auto result = message.compare(0, 10, "FILE_MODE:");
             KnownClientConnections[remote_endpoint_].connection_time = std::chrono::system_clock::now();
@@ -239,16 +241,22 @@ private:
 
                 KnownClientConnections[remote_endpoint_].file_name = filePath.filename().string();
                 LOG(LoggerVerbosity::INFO, remote_str + ": file_name=" + KnownClientConnections[remote_endpoint_].file_name);
-                return; // Don't process the file mode message further
+                if (StriperMode != StriperModeE::TRANSMITTER) {
+                    return; // Don't process the file mode message further
+                }
             }
             else {
                 KnownClientConnections[remote_endpoint_].mode = UdpSendMode::MESSAGE;
             }
             LOG(LoggerVerbosity::INFO, remote_str + ": mode = " +
                 std::string(magic_enum::enum_name(KnownClientConnections[remote_endpoint_].mode)));
+        } else {
+            // Known Connection
+
         }
 
         if (KnownClientConnections[remote_endpoint_].mode == UdpSendMode::MESSAGE) {
+            message = std::string(reinterpret_cast<const char*> (recv_buffer_.data()), length);
             LOG(LoggerVerbosity::INFO, remote_str +
                 ":MM: Received Message: " + message);
 
@@ -262,8 +270,7 @@ private:
         }
         else if (KnownClientConnections[remote_endpoint_].mode == UdpSendMode::SEND_FILE) {
             // FILE MODE: Expecting file chunks in the format "CHUNK:<chunk_number>:<data>"
-            std::vector<uint8_t> data(recv_buffer_.begin(), recv_buffer_.begin() + length);
-            FileTransferHeader fh = FileTransferHeader::deserialize(data);
+            FileTransferHeader fh = FileTransferHeader::deserialize(recv_buffer_);
             LOG(LoggerVerbosity::INFO, remote_str +
                 ":FM: Received " + std::to_string(length) + " bytes" +
                 " chunkNumber=" + std::to_string(fh.chunkNumber) +
@@ -272,7 +279,6 @@ private:
             if (StriperMode == StriperModeE::TRANSMITTER) {
                 LOG(LoggerVerbosity::INFO, "Packetizing received data to send to striper");
                 // convert to packet format
-                auto pkt = std::make_unique<Packet>(data);
                 auto udpHdr = std::make_shared<PacketHeaderUDP>();
                 auto pos = remote_str.find(":", 0);
                 
@@ -296,16 +302,18 @@ private:
                     }
                 }
                 udpHdr->dstPort = port;
-                udpHdr->length = udpHdr->Size() + data.size();
-                pkt->AddHeader(udpHdr);
+                udpHdr->length = udpHdr->Size() + length;
+                PacketHeaders pktHdr;
+                pktHdr.AddHeader(udpHdr);
                 LOG(LoggerVerbosity::INFO, "Add UDP header: " + udpHdr->to_string());
+                stripesMgr->SendPacket(pktHdr, recv_buffer_, length);
 
-            } else {
+            } else { // Non Transmitter Mode, so save Save file
                 if (fh.chunkSize > 0) {
                     auto [cit, inserted] =
                         KnownClientConnections[remote_endpoint_].file_chunks.emplace(
                             fh.chunkNumber,
-                            std::vector<uint8_t>(data.begin() + fh.GetHeaderSizeBytes(), data.end())
+                            std::vector<uint8_t>(recv_buffer_.begin() + fh.GetHeaderSizeBytes(), recv_buffer_.begin() + length)
                         );
                 }
                 else {

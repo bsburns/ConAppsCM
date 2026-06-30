@@ -111,12 +111,12 @@ int main(int argc, char* argv[]) {
     try {
         // 1. Every Asio program needs an io_context object
 
-        UdpClient uclient(ServerIP, SourcePort, ServerPort, sendMode);
-        auto rc = uclient.SendFile(SendFile);
-        if (rc) {
-            LOG(LoggerVerbosity::ERR, "Send file error: rc=" + std::to_string(rc));
-        }
-/*
+        //UdpClient uclient(ServerIP, SourcePort, ServerPort, sendMode);
+        //auto rc = uclient.SendFile(SendFile);
+        //if (rc) {
+        //    LOG(LoggerVerbosity::ERR, "Send file error: rc=" + std::to_string(rc));
+        //}
+
         boost::asio::io_context io_context;
         // 2. Resolve the remote hostname or IP address and port
         LOG(LoggerVerbosity::INFO, "Connecting to " + ServerIP + ":" + ServerPort);
@@ -209,7 +209,6 @@ int main(int argc, char* argv[]) {
                 LOG(LoggerVerbosity::INFO, "Not in interactive mode, exiting after one message.");
             }
         }
-        */
     } catch (std::exception& e) {
         std::cerr << "Exception: " << e.what() << std::endl;
     }

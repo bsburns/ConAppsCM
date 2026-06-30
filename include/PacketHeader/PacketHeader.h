@@ -38,10 +38,10 @@ enum class PacketHeaderType : int {
 
 class PacketHeaderBase {
 public:
-	PacketHeaderType packetType;
+	PacketHeaderType header_type;
 
 	// Constructor
-	PacketHeaderBase() { packetType = PacketHeaderType::NOTSET; }
+	PacketHeaderBase() { header_type = PacketHeaderType::NOTSET; }
 
     // Serialization function
     virtual std::vector<uint8_t> serialize() const = 0;
@@ -58,17 +58,17 @@ public:
 
 class PacketHeaderTCP : public PacketHeaderBase {
 public:
-	uint16_t srcPort;
-	uint16_t dstPort;
-	uint32_t sequenceNumber;
-	uint32_t acknowledgmentNumber;
-	uint8_t dataOffset; // 4 bits
-	uint8_t flags; // 6 bits
-	uint16_t windowSize;
-	uint16_t checksum;
-	uint16_t urgentPointer;
+	uint16_t srcPort=0;
+	uint16_t dstPort=0;
+	uint32_t sequenceNumber=0;
+	uint32_t acknowledgmentNumber=0;
+	uint8_t dataOffset=0; // 4 bits
+	uint8_t flags=0; // 6 bits
+	uint16_t windowSize=0;
+	uint16_t checksum=0;
+	uint16_t urgentPointer=0;
 	PacketHeaderTCP() {
-		packetType = PacketHeaderType::TCP;
+		header_type = PacketHeaderType::TCP;
 	}
 	std::vector<uint8_t> serialize() const override {
 		std::vector<uint8_t> data(Size()); // TCP header is typically 20 bytes
@@ -126,12 +126,12 @@ public:
 
 class PacketHeaderUDP : public PacketHeaderBase {
 public:
-	uint16_t srcPort;
-	uint16_t dstPort;
-	uint16_t length;
+	uint16_t srcPort = 0;
+	uint16_t dstPort = 0;
+	uint16_t length = 0;
 	uint16_t checksum = 0;
 	PacketHeaderUDP() {
-		packetType = PacketHeaderType::UDP;
+		header_type = PacketHeaderType::UDP;
 	}
 	std::vector<uint8_t> serialize() const override {
 		std::vector<uint8_t> data(Size()); // UDP header is 8 bytes
@@ -173,15 +173,15 @@ public:
 	uint8_t version = 2;
 	bool padded = false;
 	bool extension = false;
-	uint8_t CSRC_Count;
+	uint8_t CSRC_Count = 0;
 	bool marker = false;
-	uint8_t payload_type;
-	uint16_t sequence_number;
-	uint32_t timestamp;
-	uint32_t sync_src;
+	uint8_t payload_type = 0;
+	uint16_t sequence_number = 0;
+	uint32_t timestamp = 0;
+	uint32_t sync_src = 0;
 
 	PacketHeaderRTP() {
-		packetType = PacketHeaderType::RTP;
+		header_type = PacketHeaderType::RTP;
 	}
 	std::vector<uint8_t> serialize() const override {
 		std::vector<uint8_t> data(Size()); // RTP header is 12 bytes
@@ -231,20 +231,20 @@ public:
 	bool reserved = false;
 	bool padding_recovery = false;
 	bool extension_recovery = false;
-	uint8_t CSRC_recovery;
-	bool marker_recovery;
-	uint8_t payload_type_recovery;
-	uint16_t sequence_base;
-	uint32_t timestamp_recovery;
-	uint16_t length_recovery;
+	uint8_t CSRC_recovery = 0;
+	bool marker_recovery = false;
+	uint8_t payload_type_recovery = 0;
+	uint16_t sequence_base = 0;
+	uint32_t timestamp_recovery = 0;
+	uint16_t length_recovery = 0;
 	uint16_t reserved1 = 0;
-	uint16_t offset;
+	uint16_t offset = 0;
 	uint8_t reserved2 = 0;
-	uint16_t NA_D_or_L;
+	uint16_t NA_D_or_L = 0;
 	uint8_t reserved3 = 0;
 
 	PacketHeaderSMPTE() { 
-		packetType = PacketHeaderType::SMPTE; 
+		header_type = PacketHeaderType::SMPTE; 
 	}
 
 	std::vector<uint8_t> serialize() const override {
@@ -301,19 +301,12 @@ public:
 	}
 };
 
-class Packet {
+class PacketHeaders {
 public:
 	uint32_t length = 0;
 	std::vector<std::shared_ptr<PacketHeaderBase>> headers;
-	std::vector<uint8_t> data;
-	Packet() {
+	PacketHeaders() {
 		headers.clear();
-		data.clear();
-	}
-	Packet(std::vector<uint8_t> data_)
-		: data(std::move(data_))
-	{
-		length = data.size();
 	}
 
 	void AddHeader(std::shared_ptr<PacketHeaderBase> hdr, int position = 0) {

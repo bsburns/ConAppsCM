@@ -229,14 +229,14 @@ int main(int argc, char* argv[]) {
     }
 
     LOG(LoggerVerbosity::CRITICAL, "Striper Mode: " + std::string(magic_enum::enum_name(StriperMode)));
-    StripesManager stripesMgr(&StriperConfig);
+    std::shared_ptr<StripesManager> stripesMgr = std::make_shared<StripesManager>(&StriperConfig);
     if (!StripeProcessName.empty()) {
 		// This is a Stripe Processor, not the main UDP server
 
         Debugger debug;
         debug.Launch(WaitDebugAttachIterations);
 
-        StripeProc = new StripeProcess(StripeProcessName);
+        StripeProc = new StripeProcess(StripeProcessName, StriperMode, &StriperConfig);
     }
     else {
         // Main UDP Server
@@ -247,10 +247,16 @@ int main(int argc, char* argv[]) {
             process_args += " --verbosity " + std::to_string(LOG_INST.GetVerbosity());
             process_args += " --watchdog " + std::to_string(WatchdogTimeout);
             process_args += " -y " + std::to_string(WaitDebugAttachIterations);
+            process_args += " --outdir " + OutDir;
+            process_args += StriperMode == StriperModeE::TRANSMITTER ? " --tx_striper" : " --rx_striper";
 
-
-            stripesMgr.Initialize(StriperMode, argv[0], process_args);
-            stripesMgr.SendMessage("Next message");
+            //std::string process_args2;
+            //for (int i = 1; i < argc; i++) {
+            //    process_args2 += std::string(argv[i]) + " ";
+            //}
+            
+            stripesMgr->Initialize(StriperMode, argv[0], process_args);
+            stripesMgr->SendMessage("Next message");
         }
 
         if (TM.force_stop) {
@@ -261,7 +267,7 @@ int main(int argc, char* argv[]) {
             try {
                 boost::asio::io_context io_context;
                 short port = static_cast<short>(std::stoi(ServerPort));
-                UdpServer server(io_context, port, OutDir, &stripesMgr, StriperMode);
+                UdpServer server(io_context, port, OutDir, stripesMgr, StriperMode);
 
                 std::cout << "\nUDP Server running on port " << ServerPort << "..." << std::endl;
                 watchdog.SetOnTimeoutCallback([&server]() {
@@ -279,8 +285,8 @@ int main(int argc, char* argv[]) {
 
     // Wait for threads to join
     LOG(LoggerVerbosity::INFO, "Waiting threads to join...");
-    stripesMgr.SendExit();
-    stripesMgr.WaitForComplete();
+    stripesMgr->SendExit();
+    stripesMgr->WaitForComplete();
     watchdog.StopMonitoring(); 
     TM.WaitAllThreads(); // Wait for all threads to finish
     return 0;

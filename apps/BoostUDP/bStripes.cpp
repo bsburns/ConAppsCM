@@ -17,6 +17,8 @@
 #include <map>
 #include <filesystem>
 #include <cstdlib>
+#include <utility> // for std::move
+
 
 #include <boost/asio.hpp>
 #include <boost/process/v1.hpp>
@@ -32,6 +34,7 @@
 #include "threadManager.h"
 #include "watchdog.h"
 
+
 using namespace boost::interprocess;
 namespace bp = boost::process;
 
@@ -46,38 +49,66 @@ typedef allocator<void, SegmentManager>                                 VoidAllo
 // Allocator for StripeDequeMessage (defined below) will be declared after message is known.
 // We'll define the message's internal vector allocator alias below once message is declared.
 
-struct StripeDequeMessageNew; // forward declare so we can declare the deque allocator type
+struct StripeShmDequeMessage; // forward declare so we can declare the deque allocator type
 typedef boost::interprocess::allocator<int, SegmentManager>                   StripeSharedDataAllocator;
-typedef boost::interprocess::allocator<StripeDequeMessageNew, SegmentManager>    ShStripeMsgAllocator;
-typedef boost::interprocess::deque<StripeDequeMessageNew, ShStripeMsgAllocator>  StripeShmDeque;
+typedef boost::interprocess::allocator<StripeShmDequeMessage, SegmentManager>    ShStripeMsgAllocator;
+typedef boost::interprocess::deque<StripeShmDequeMessage, ShStripeMsgAllocator>  StripeShmDeque;
+typedef boost::interprocess::vector<uint8_t, allocator<uint8_t, SegmentManager>> ShmVector;
 
+struct ShmPacketHeader {
+    PacketHeaderType htype;
+    ShmVector header;
 
-struct StripeDequeMessageNew {
+    // Allocator-aware constructors
+    explicit ShmPacketHeader(const allocator<uint8_t, SegmentManager>& alloc) 
+        : htype(PacketHeaderType::NOTSET), header(alloc)
+    { }
+
+    ShmPacketHeader(PacketHeaderType htype_, const allocator<uint8_t, SegmentManager>& alloc)
+        : htype(htype_), header(alloc) {
+    }    
+};
+
+struct StripeShmDequeMessage {
     DeqMsgType msg_type;
     int msg_length;
 
     // Use interprocess vector for payload so it can live inside shared memory
-    typedef boost::interprocess::vector<uint8_t, allocator<uint8_t, SegmentManager>> ShmVector;
     ShmVector data;
 
+    typedef boost::interprocess::vector<ShmPacketHeader, allocator<ShmPacketHeader, SegmentManager>> ShmHeaderVector;
+    ShmHeaderVector headers;
+
+
     // Allocator-aware constructors
-    explicit StripeDequeMessageNew(const allocator<uint8_t, SegmentManager>& alloc)
-        : msg_type(DeqMsgType::NOTSET), msg_length(0), data(alloc) {
+    explicit StripeShmDequeMessage(const allocator<uint8_t, SegmentManager>& alloc)
+        : msg_type(DeqMsgType::NOTSET), msg_length(0), data(alloc), headers(alloc) {
     }
 
-    StripeDequeMessageNew(DeqMsgType t, int len, const allocator<uint8_t, SegmentManager>& alloc)
-        : msg_type(t), msg_length(len), data(alloc) {
+    StripeShmDequeMessage(DeqMsgType t, int len, const allocator<uint8_t, SegmentManager>& alloc)
+        : msg_type(t), msg_length(len), data(alloc), headers(alloc) {
     }
 };
     
-static std::ostream& operator<<(std::ostream& os, const StripeDequeMessageNew& msg) {
+static std::ostream& operator<<(std::ostream& os, const StripeShmDequeMessage& msg) {
     os << "StripeDequeMessage{msg_type="
         << std::string(magic_enum::enum_name(msg.msg_type))
-        << ", msg_length=" << msg.msg_length
-        << ", data=";
+        << ", msg_length=" << msg.msg_length;
+    if (msg.msg_type == DeqMsgType::PACKET) {
+        os << ", headers=[";
+        for (auto it = msg.headers.begin(); it != msg.headers.end(); ++it) {
+            os << std::string(magic_enum::enum_name(it->htype));
+            if (std::next(it) != msg.headers.end()) os << ", ";
+        }
+        os << "]";
+    }
+    os << ", data=";
     int msize = msg.data.size();
     if (msg.data.size() != static_cast<size_t>(msg.msg_length)) {
-        os << "(Warning: msg_length does not match data size!) ";
+        os << "(Warning: msg_length does not match data size!"
+            << " size=" << msg.data.size()
+            << " length=" << msg.msg_length
+            << ") ";
     }
     if (msg.data.size() != 0) {
         auto count = 10;
@@ -195,7 +226,7 @@ public:
     void SendMessage(std::string message) {
         // Create a message using the shared-memory byte allocator
         allocator<uint8_t, SegmentManager> byteAlloc(segment->get_segment_manager());
-        StripeDequeMessageNew msg(byteAlloc);
+        StripeShmDequeMessage msg(byteAlloc);
         std::string send_msg = "(" + shm_name + "): " + message;
         msg.msg_type = DeqMsgType::MESSAGE;
         msg.msg_length = send_msg.size();
@@ -209,10 +240,40 @@ public:
         shared_data->cond_nonempty.notify_one();
     }
 
+
+    void SendPacket(PacketHeaders& headers_, std::vector<uint8_t>& data_, std::size_t length_) {
+        allocator<uint8_t, SegmentManager> byteAlloc(segment->get_segment_manager());
+        StripeShmDequeMessage msg(byteAlloc);
+        msg.msg_type = DeqMsgType::PACKET;
+
+        for (const auto& hdr : headers_.headers) {
+            ShmPacketHeader shmHdr(byteAlloc);
+            shmHdr.htype = hdr->header_type;
+            auto hdrv = hdr->serialize();
+            for (auto& b : hdrv) {
+                shmHdr.header.emplace_back(b);
+            }
+            msg.headers.emplace_back(shmHdr);
+        }
+
+        msg.msg_length = length_;
+        //msg.data = std::move(data_.begin(), data_.begin() + length_);
+        msg.data.assign(std::make_move_iterator(data_.begin()), std::make_move_iterator(data_.begin() + length_));
+        std::stringstream ss;
+        ss << msg;
+        LOG(LoggerVerbosity::INFO, "Created SHM Packet:" + ss.str());
+
+        // Place Packet on Shared Deque
+        shared_data->mutex.lock();
+        shared_data->stripe_deque.push_back(msg);
+        shared_data->mutex.unlock();
+        shared_data->cond_nonempty.notify_one();
+    }
+
     void SendExit() {
         // Create a message using the shared-memory byte allocator
         allocator<uint8_t, SegmentManager> byteAlloc(segment->get_segment_manager());
-        StripeDequeMessageNew msg(byteAlloc);
+        StripeShmDequeMessage msg(byteAlloc);
         msg.msg_type = DeqMsgType::EXIT_PROCESS;
         msg.msg_length = 0;
         shared_data->mutex.lock();
@@ -236,6 +297,8 @@ public:
 class StripesManagerImpl {
 private:
     std::vector<StripeProcessManager> stripe_processors;
+    std::vector<StripeProcessManager>::iterator stripe_it;
+    uint32_t current_stripe = 0;
     AllStriperConfig* striperConfig = nullptr;
     StriperModeE mode;
     std::string process_path;
@@ -243,7 +306,9 @@ private:
 
 public:
     StripesManagerImpl(AllStriperConfig* striper_config_) 
-        : striperConfig(striper_config_) {}
+        : striperConfig(striper_config_) 
+        , stripe_it(stripe_processors.begin())
+    {}
 
     int InitializeInternal(StriperModeE mode_, std::string path_, std::string args_) {
         mode = mode_;
@@ -275,6 +340,7 @@ public:
 
         }
         LOG(LoggerVerbosity::INFO, "All child processes spawned and running in parallel...");
+        return 0;
     }
 
     void SendMessage(std::string msg, int stripe_num=-1) {
@@ -289,6 +355,25 @@ public:
             }
             stripe_processors[stripe_num].SendMessage(msg);
         }
+    }
+
+    void SendPacket(PacketHeaders& pkt_, std::vector<uint8_t>& data_, std::size_t length_) {
+        // Select Stripe to send packet too
+
+        if (stripe_processors.size() == 0) {
+            LOG(LoggerVerbosity::ERR, "No stripe processors instantiated!!!");
+            return;
+        }
+        if (current_stripe >= stripe_processors.size()) current_stripe = 0;
+        stripe_processors[current_stripe].SendPacket(pkt_, data_, length_);
+        current_stripe++;
+        /*
+        if (stripe_it == stripe_processors.end()) {
+            stripe_it = stripe_processors.begin();
+        }
+        stripe_it->SendPacket(pkt_, data_, length_);
+        stripe_it++;
+        */
     }
 
     void SendExit(int stripe_num=-1) {
@@ -315,7 +400,6 @@ public:
                 + std::to_string(sp.stripe_process.exit_code()));
         }
     }
-
 };
 
 // Public StripesManager class methods
@@ -332,6 +416,10 @@ void StripesManager::SendMessage(std::string msg, int stripe_num) { // stripe_nu
     return impl->SendMessage(msg, stripe_num);
 }
 
+void StripesManager::SendPacket(PacketHeaders& pkt, std::vector<uint8_t>& data, std::size_t length) {
+    return impl->SendPacket(pkt, data, length);
+}
+
 void StripesManager::SendExit(int stripe_num) { // stripe_num == -1 means all stripes
     return impl->SendExit(stripe_num);
 }
@@ -341,8 +429,11 @@ void StripesManager::WaitForComplete() {
 }
 
 // Class Stripe Process Methods
-StripeProcess::StripeProcess(std::string name_) 
+StripeProcess::StripeProcess(std::string name_, StriperModeE mode_, AllStriperConfig* striper_config_)
     : name(name_) 
+    , mode(mode_)
+    , striperConfig(striper_config_)
+    , fecEngine(mode_, striper_config_)
     , segment(boost::interprocess::managed_shared_memory(open_only, name.c_str()))
 {
     LOG(LoggerVerbosity::INFO, "This is a Stripe Processor: " + name);
@@ -352,6 +443,10 @@ StripeProcess::StripeProcess(std::string name_)
 
     ThreadManager& TM = ThreadManager::GetInstance();
     Watchdog& watchdog = Watchdog::GetInstance();
+
+    if (mode == StriperModeE::TRANSMITTER) {
+        // Open UDP Client for out-going FEC streams
+    }
 
     TM.StartThread("MonitorDequeue-"+name, [this, &TM, &watchdog]() {
         boost::interprocess::managed_shared_memory local_segment(open_only, this->name.c_str());
@@ -374,11 +469,12 @@ StripeProcess::StripeProcess(std::string name_)
                 // Deque Not empty
                 watchdog.CheckIn();
                 while (!my_data->stripe_deque.empty()) {
-                    StripeDequeMessageNew msg = my_data->stripe_deque.front();
+                    StripeShmDequeMessage msg = my_data->stripe_deque.front();
                     switch (msg.msg_type) {
                     case DeqMsgType::MESSAGE:
                         break;
                     case DeqMsgType::PACKET:
+                        this->ReceivedPacket(msg);
                         break;
                     case DeqMsgType::EXIT_PROCESS:
                         exit_loop = true;
@@ -389,6 +485,7 @@ StripeProcess::StripeProcess(std::string name_)
                     ss << msg;
                     LOG(LoggerVerbosity::INFO, "Popped: " + ss.str());
                     my_data->stripe_deque.pop_front();
+
                 }
             }
         }
@@ -398,4 +495,25 @@ StripeProcess::StripeProcess(std::string name_)
         });
 }
 
+void StripeProcess::ReceivedPacket(StripeShmDequeMessage& msg) {
+    if (mode == StriperModeE::TRANSMITTER) {
+        // Perform SMPTE FEC on packet
 
+    } else {
+
+    }
+}
+
+//class SMPTE_FEC_Engine {
+//private:
+//    StriperModeE mode;
+//    AllStriperConfig* striperConfig;
+//
+//public:
+//    SMPTE_FEC_Engine(StriperModeE mode_, AllStriperConfig* striper_config_)
+//        : mode(mode_)
+//        , striperConfig(striper_config_)
+//    {
+//
+//    }
+//};

@@ -13,6 +13,8 @@
 #include <memory> // for std::unique_ptr
 #include <boost/interprocess/managed_shared_memory.hpp>
 #include "bStriperConfig.h"
+#include "PacketHeader/PacketHeader.h"
+
 
 enum class StriperModeE : int {
     NOTSET = 0,
@@ -29,7 +31,7 @@ enum class DeqMsgType : int {
     EXIT_PROCESS = 3
 };
 
-struct StripeDequeMessageNew; // forward declaration
+struct StripeShmDequeMessage; // forward declaration
 
 class StripesManagerImpl;
 
@@ -48,6 +50,7 @@ public:
 
     int Initialize(StriperModeE mode_, std::string path_, std::string args_);
     void SendMessage(std::string msg, int stripe_num=-1); // stripe_num == -1 means all stripes
+    void SendPacket(PacketHeaders& pkt, std::vector<uint8_t>& data, std::size_t length);
     void SendExit(int stripe_num = -1); // stripe_num == -1 means all stripes
     void WaitForComplete();
 
@@ -55,14 +58,34 @@ private:
     std::unique_ptr<StripesManagerImpl> impl; // Pointer to hidden implementation
 };
 
+//class SMPTE_FEC_Engine; // Forward declaration
+
+class SMPTE_FEC_Engine {
+private:
+    StriperModeE mode;
+    AllStriperConfig* striperConfig;
+
+public:
+    SMPTE_FEC_Engine(StriperModeE mode_, AllStriperConfig* striper_config_)
+        : mode(mode_)
+        , striperConfig(striper_config_)
+    {
+
+    }
+};
+
 class StripeProcess {
 private:
     std::string name;
+    StriperModeE mode;
+    AllStriperConfig* striperConfig;
     boost::interprocess::managed_shared_memory segment;
+    SMPTE_FEC_Engine fecEngine;
 
+    void ReceivedPacket(StripeShmDequeMessage& msg);
 public:
     StripeProcess() = delete;
-    StripeProcess(std::string name_);
+    StripeProcess(std::string name_, StriperModeE mode_, AllStriperConfig* striper_config_);
 
     // Rule of five (disable copy, allow move)
     StripeProcess(const StripeProcess&) = delete;
