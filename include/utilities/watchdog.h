@@ -74,9 +74,9 @@ public:
 		ThreadManager& TM = ThreadManager::GetInstance();
 		auto last_active_time = std::chrono::high_resolution_clock::now();
 		bool warning_issued = false;
-		while (!TM.force_stop && !GetInstance().local_force_stop) {
-			if (GetInstance().activity) {
-				GetInstance().activity = false;
+		while (!TM.force_stop.load() && !GetInstance().local_force_stop.load()) {
+			if (GetInstance().activity.load()) {
+				GetInstance().activity.store(false);
 				warning_issued = false;
 				last_active_time = std::chrono::high_resolution_clock::now();
 			}
@@ -122,10 +122,10 @@ public:
 
 	void StopMonitoring() {
 		// Stop the monitoring process and clean up resources.
-		local_force_stop = true;
+		local_force_stop.store(true);
 	}
 	void CheckIn() {
-		activity = true;
+		activity.store(true);
 	}
 
 	void SetOnTimeoutCallback(std::function<void()> callback) {

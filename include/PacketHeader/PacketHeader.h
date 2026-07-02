@@ -18,9 +18,10 @@
 #include <iomanip> // For std::setw and std::setfill
 
 #include "utility.h"
-enum class PacketHeaderType : int {
+enum class PacketHeaderType : uint8_t {
     // Define your packet header types here
 	NOTSET = 0,
+	IPv4 = 4,
 	ICMP = 1,
 	IGMP = 2,
 	TCP = 6,
@@ -35,6 +36,13 @@ enum class PacketHeaderType : int {
 	RTP = 1000,
 	SMPTE = 1001,
 };
+
+static std::string ip_to_string(uint32_t ip) {
+	return std::to_string((ip >> 24) & 0xFF) + "." +
+		std::to_string((ip >> 16) & 0xFF) + "." +
+		std::to_string((ip >> 8) & 0xFF) + "." +
+		std::to_string(ip & 0xFF);
+}
 
 class PacketHeaderBase {
 public:
@@ -51,25 +59,137 @@ public:
 
 	virtual uint32_t Size() const = 0;
 
+	virtual void Reset() = 0;
+
 	virtual std::string to_string() const = 0;
 
 	virtual ~PacketHeaderBase() = default;
 };
 
+class PacketHeaderIPv4 : public PacketHeaderBase {
+public:
+	uint8_t Version;
+	uint8_t IHL;
+	uint8_t TOS;
+	uint16_t totalLength;
+	uint16_t ID; // 4 bits
+	uint8_t flags; // 6 bits
+	uint16_t fragmentOffset;
+	uint8_t TTL;
+	uint8_t Protocol;
+	uint16_t headerChecksum;
+	uint32_t srcIP;
+	uint32_t dstIP;
+
+	PacketHeaderIPv4() {
+		header_type = PacketHeaderType::IPv4;
+		Reset();
+	}
+
+	void Reset() override {
+		Version = 0;
+		IHL = 0;
+		TOS = 0;
+		totalLength = 0;
+		ID = 0; // 4 bits
+		flags = 0; // 6 bits
+		fragmentOffset = 0;
+		TTL = 0;
+		Protocol = 0;
+		headerChecksum = 0;
+		srcIP = 0;
+		dstIP = 0;
+	}
+
+	std::vector<uint8_t> serialize() const override {
+		std::vector<uint8_t> data(Size()); // TCP header is typically 20 bytes
+		// Serialize fields into byte vector (big-endian)
+		data[0] = (Version & 0xF) << 4 | (IHL & 0xF);
+		data[1] = TOS;
+		data[2] = totalLength >> 8;
+		data[3] = totalLength & 0xFF;
+		data[4] = ID >> 8;
+		data[5] = ID & 0xFF;
+		data[6] = (flags & 0xF) << 4 | ((fragmentOffset >> 8) & 0xF);
+		data[7] = fragmentOffset & 0xFF;
+		data[8] = TTL;
+		data[9] = Protocol;
+		data[10] = (headerChecksum >> 8) & 0xFF;
+		data[11] = headerChecksum & 0xFF;
+		data[12] = (srcIP >> 24) & 0xFF;
+		data[13] = (srcIP >> 16) & 0xFF;
+		data[14] = (srcIP >> 8) & 0xFF;
+		data[15] = srcIP & 0xFF;
+		data[16] = (dstIP >> 24) & 0xFF;
+		data[17] = (dstIP >> 16) & 0xFF;
+		data[18] = (dstIP >> 8) & 0xFF;
+		data[19] = dstIP & 0xFF;
+		return data;
+	}
+	
+	std::unique_ptr<PacketHeaderBase> deserialize(const std::vector<uint8_t>& data) override {
+		if (data.size() < Size()) {
+			throw std::invalid_argument("Data too short for TCP header");
+		}
+		auto header = std::make_unique<PacketHeaderIPv4>();
+		header->Version = (data[0] >> 4) & 0xF;
+		header->IHL = data[0] & 0xF;
+		header->TOS = data[1];
+		header->totalLength = (data[2] << 8) | data[3];
+		header->ID = (data[4] << 8) | data[5];
+		header->flags = (data[6] >> 4) & 0xF;
+		header->fragmentOffset = ((data[6] & 0xF) << 8) | data[7];
+		header->TTL = data[8];
+		header->Protocol = data[9];
+		header->headerChecksum = (data[10] << 8) | data[11];
+		header->srcIP = (data[12] << 24) | (data[13] << 16) | (data[14] << 8) | data[15];
+		header->dstIP = (data[16] << 24) | (data[17] << 16) | (data[18] << 8) | data[19];
+		return header;
+	}
+	
+	uint32_t Size() const override { return 20; }
+
+	std::string to_string() const override {
+		std::string str = "IPv4={";
+		str += "TOS=" + std::to_string(TOS);
+		str += ", Length=" + std::to_string(totalLength);
+		str += ", TTL=" + std::to_string(TTL);
+		str += ", SRC=" + ip_to_string(srcIP);
+		str += ", DST=" + ip_to_string(dstIP);
+		str += "}";
+		return str;
+	}
+};
+
 class PacketHeaderTCP : public PacketHeaderBase {
 public:
-	uint16_t srcPort=0;
-	uint16_t dstPort=0;
-	uint32_t sequenceNumber=0;
-	uint32_t acknowledgmentNumber=0;
-	uint8_t dataOffset=0; // 4 bits
-	uint8_t flags=0; // 6 bits
-	uint16_t windowSize=0;
-	uint16_t checksum=0;
-	uint16_t urgentPointer=0;
+	uint16_t srcPort;
+	uint16_t dstPort;
+	uint32_t sequenceNumber;
+	uint32_t acknowledgmentNumber;
+	uint8_t dataOffset; // 4 bits
+	uint8_t flags; // 6 bits
+	uint16_t windowSize;
+	uint16_t checksum;
+	uint16_t urgentPointer;
+
 	PacketHeaderTCP() {
 		header_type = PacketHeaderType::TCP;
+		Reset();
 	}
+
+	void Reset() override {
+		srcPort = 0;
+		dstPort = 0;
+		sequenceNumber = 0;
+		acknowledgmentNumber = 0;
+		dataOffset = 0; // 4 bits
+		flags = 0; // 6 bits
+		windowSize = 0;
+		checksum = 0;
+		urgentPointer = 0;
+	}
+
 	std::vector<uint8_t> serialize() const override {
 		std::vector<uint8_t> data(Size()); // TCP header is typically 20 bytes
 		// Serialize fields into byte vector (big-endian)
@@ -94,7 +214,7 @@ public:
 		data[18] = urgentPointer & 0xFF;
 		return data;
 	}
-	
+
 	std::unique_ptr<PacketHeaderBase> deserialize(const std::vector<uint8_t>& data) override {
 		if (data.size() < Size()) {
 			throw std::invalid_argument("Data too short for TCP header");
@@ -111,7 +231,7 @@ public:
 		header->urgentPointer = (data[17] << 8) | data[18];
 		return header;
 	}
-	
+
 	uint32_t Size() const override { return 20; }
 
 	std::string to_string() const override {
@@ -126,13 +246,23 @@ public:
 
 class PacketHeaderUDP : public PacketHeaderBase {
 public:
-	uint16_t srcPort = 0;
-	uint16_t dstPort = 0;
-	uint16_t length = 0;
-	uint16_t checksum = 0;
+	uint16_t srcPort;
+	uint16_t dstPort;
+	uint16_t length;
+	uint16_t checksum;
+
 	PacketHeaderUDP() {
 		header_type = PacketHeaderType::UDP;
+		Reset();
 	}
+
+	void Reset() override {
+		srcPort = 0;
+		dstPort = 0;
+		length = 0;
+		checksum = 0;
+	}
+
 	std::vector<uint8_t> serialize() const override {
 		std::vector<uint8_t> data(Size()); // UDP header is 8 bytes
 		data[0] = srcPort >> 8;
@@ -145,6 +275,7 @@ public:
 		data[7] = checksum & 0xFF;
 		return data;
 	}
+
 	std::unique_ptr<PacketHeaderBase> deserialize(const std::vector<uint8_t>& data) override {
 		if (data.size() < Size()) {
 			throw std::invalid_argument("Data too short for UDP header");
@@ -156,6 +287,7 @@ public:
 		header->checksum = (data[6] << 8) | data[7];
 		return header;
 	}
+
 	uint32_t Size() const override { return 8; }
 
 	std::string to_string() const override {
@@ -170,19 +302,33 @@ public:
 
 class PacketHeaderRTP: public PacketHeaderBase{
 public:
-	uint8_t version = 2;
-	bool padded = false;
-	bool extension = false;
-	uint8_t CSRC_Count = 0;
-	bool marker = false;
-	uint8_t payload_type = 0;
-	uint16_t sequence_number = 0;
-	uint32_t timestamp = 0;
-	uint32_t sync_src = 0;
+	uint8_t version;
+	bool padded;
+	bool extension;
+	uint8_t CSRC_Count;
+	bool marker;
+	uint8_t payload_type;
+	uint16_t sequence_number;
+	uint32_t timestamp;
+	uint32_t sync_src;
 
 	PacketHeaderRTP() {
 		header_type = PacketHeaderType::RTP;
+		Reset();
 	}
+
+	void Reset() override {
+		version = 2;
+		padded = false;
+		extension = false;
+		CSRC_Count = 0;
+		marker = false;
+		payload_type = 0;
+		sequence_number = 0;
+		timestamp = 0;
+		sync_src = 0;
+	}
+
 	std::vector<uint8_t> serialize() const override {
 		std::vector<uint8_t> data(Size()); // RTP header is 12 bytes
 		data[0] = (version << 6) | (padded << 5) | (extension << 4) | (CSRC_Count & 0xF);
@@ -199,6 +345,7 @@ public:
 		data[11] = sync_src & 0xFF;
 		return data;
 	}
+
 	std::unique_ptr<PacketHeaderBase> deserialize(const std::vector<uint8_t>& data) override {
 		if (data.size() < Size()) {
 			throw std::invalid_argument("Data too short for RTP header");
@@ -215,6 +362,7 @@ public:
 		header->sync_src = data[8] << 24 | data[9] << 16 | data[10] << 8 | data[11];
 		return header;
 	}
+	
 	uint32_t Size() const override { return 12; }
 
 	std::string to_string() const override {
@@ -227,24 +375,43 @@ public:
 
 class PacketHeaderSMPTE : public PacketHeaderBase {
 public:
-	bool extension = false;
-	bool reserved = false;
-	bool padding_recovery = false;
-	bool extension_recovery = false;
-	uint8_t CSRC_recovery = 0;
-	bool marker_recovery = false;
-	uint8_t payload_type_recovery = 0;
-	uint16_t sequence_base = 0;
-	uint32_t timestamp_recovery = 0;
-	uint16_t length_recovery = 0;
-	uint16_t reserved1 = 0;
-	uint16_t offset = 0;
-	uint8_t reserved2 = 0;
-	uint16_t NA_D_or_L = 0;
-	uint8_t reserved3 = 0;
+	bool extension;
+	bool reserved;
+	bool padding_recovery;
+	bool extension_recovery;
+	uint8_t CSRC_recovery;
+	bool marker_recovery;
+	uint8_t payload_type_recovery;
+	uint16_t sequence_base;
+	uint32_t timestamp_recovery;
+	uint16_t length_recovery;
+	uint16_t reserved1;
+	uint16_t offset;
+	uint8_t reserved2;
+	uint16_t NA_D_or_L;
+	uint8_t reserved3;
 
 	PacketHeaderSMPTE() { 
 		header_type = PacketHeaderType::SMPTE; 
+		Reset();
+	}
+
+	void Reset() override {
+		extension = false;
+		reserved = false;
+		padding_recovery = false;
+		extension_recovery = false;
+		CSRC_recovery = 0;
+		marker_recovery = false;
+		payload_type_recovery = 0;
+		sequence_base = 0;
+		timestamp_recovery = 0;
+		length_recovery = 0;
+		reserved1 = 0;
+		offset = 0;
+		reserved2 = 0;
+		NA_D_or_L = 0;
+		reserved3 = 0;
 	}
 
 	std::vector<uint8_t> serialize() const override {
@@ -268,6 +435,7 @@ public:
 
 		return data;
 	}
+
 	std::unique_ptr<PacketHeaderBase> deserialize(const std::vector<uint8_t>& data) override {
 		if (data.size() < Size()) {
 			throw std::invalid_argument("Data too short for SMPTE header");
@@ -324,4 +492,6 @@ public:
 		}
 		length += hdr->Size();
 	}
+
+	void Clear() { length = 0; headers.clear(); }
 };

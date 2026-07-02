@@ -52,7 +52,7 @@ public:
 	}
 
 	void StopAllThreads() {
-		force_stop = true;
+		force_stop.store(true);
 	}
 
 	void WaitAllThreads() {

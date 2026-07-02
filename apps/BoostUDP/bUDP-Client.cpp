@@ -97,6 +97,16 @@ int main(int argc, char* argv[]) {
         CLP_Command("server_ip,s", "Specifies IP address of server", [&ServerIP](const std::string& argument) {
             ServerIP = argument;
         }, "127.0.0.1", typeid(std::string)),
+        CLP_Command("watchdog,w", "Watchdog timeout in seconds", [&WatchdogTimeout](const std::string& argument) {
+            try {
+                WatchdogTimeout = std::stod(argument);
+            }
+            catch (const std::exception& e) {
+                std::cerr << "\nInvalid watchdog timeout value: " << argument << ". Setting to default 360 seconds.\n";
+                WatchdogTimeout = 360;
+            }
+        }, "360", typeid(double)),
+
         });
 
     LOG(LoggerVerbosity::DEBUG, show_version());
@@ -108,110 +118,51 @@ int main(int argc, char* argv[]) {
     LOG_INST.SetLogFile(LogFile);
     LOG(verbosity, "Starting log\n");
 
-    try {
-        // 1. Every Asio program needs an io_context object
+    // Start WATCHDOG thread to monitor and adjust FEC stripes
+    ThreadManager& TM = ThreadManager::GetInstance();
+    Watchdog& watchdog = Watchdog::GetInstance();
+    watchdog.SetTimeout(WatchdogTimeout);
+    watchdog.SetOnTimeoutForceExit(false); // Force exit on watchdog timeout
+    watchdog.SetOnTimeoutCallback([]() {
+        // Perform any necessary cleanup here
+        LOG(LoggerVerbosity::CRITICAL, "Watchdog timeout callback invoked. Performing cleanup before exit.");
+        exit(100);
+        });
+    TM.StartThread("WatchdogMonitor", Watchdog::monitor_thread);
 
-        //UdpClient uclient(ServerIP, SourcePort, ServerPort, sendMode);
-        //auto rc = uclient.SendFile(SendFile);
-        //if (rc) {
-        //    LOG(LoggerVerbosity::ERR, "Send file error: rc=" + std::to_string(rc));
-        //}
 
-        boost::asio::io_context io_context;
-        // 2. Resolve the remote hostname or IP address and port
-        LOG(LoggerVerbosity::INFO, "Connecting to " + ServerIP + ":" + ServerPort);
-        udp::resolver resolver(io_context);
-        udp::endpoint receiver_endpoint = *resolver.resolve(udp::v4(), ServerIP, ServerPort).begin();
+    boost::asio::io_context io_context;
+    UdpClient uclient(io_context, ServerIP, SourcePort, ServerPort, sendMode);
+    if (sendMode == UdpSendMode::SEND_FILE) {
+		uclient.SendFile(SendFile);
+    }
+    else {
+		uclient.SendMessage("Hello from Synchronous bUDP Client!");
 
-        // 3. Open the UDP socket
-        udp::socket socket(io_context);
-        socket.open(udp::v4());
-        LOG(LoggerVerbosity::INFO, "Socket opened to " + ServerIP + ":" + ServerPort);
+        if (interactiveMode) {
+            std::string input;
+            ThreadManager& TM = ThreadManager::GetInstance();
 
-        if (sendMode == UdpSendMode::SEND_FILE) {
-            LOG(LoggerVerbosity::INFO, "Sending file: " + SendFile);
-            std::string message = "FILE_MODE: " + SendFile;
-            socket.send_to(boost::asio::buffer(message), receiver_endpoint);
-
-            FileTransferHeader fh;
-			auto FTHS = fh.GetHeaderSizeBytes();
-
-            std::vector<char> buffer(CHUNK_SIZE+ FTHS);
-            size_t total_bytes_sent = 0;
-
-            // Open file in binary mode
-            std::ifstream file(SendFile, std::ios::binary);
-            if (!file) {
-                std::cerr << "Error: Cannot open file " << SendFile << "\n";
-                return 1;
-            }
-            while (file) {
-				file.read(buffer.data() + FTHS, CHUNK_SIZE - FTHS);
-                std::streamsize bytes_read = file.gcount();
-                if (bytes_read > 0) {
-					fh.chunkSize = static_cast<uint16_t>(bytes_read);
-					std::vector<uint8_t> headerData = fh.serialize();
-					std::copy(headerData.begin(), headerData.end(), buffer.begin());    
-                    size_t bytes_sent = socket.send_to(boost::asio::buffer(buffer.data(), bytes_read + FTHS), receiver_endpoint);
-                    total_bytes_sent += bytes_sent;
-                    LOG(LoggerVerbosity::INFO, "Send file: bytes_sent=" + std::to_string(bytes_sent) +
-                    " total_bytes_sent=" + std::to_string(total_bytes_sent) +
-                    " bytes_read=" + std::to_string(bytes_read));
-                    fh.chunkNumber++;
+            while (true && !TM.force_stop.load()) {
+                std::cout << "Enter message to send (or 'exit' to quit): ";
+                std::getline(std::cin, input);
+                if (input == "exit") {
+                    break;
                 }
-            }
-            // Send an empty packet to indicate EOF
-			fh.chunkSize = 0;
-            socket.send_to(boost::asio::buffer(fh.serialize(), FTHS), receiver_endpoint);
-
-            LOG(LoggerVerbosity::INFO, "File sent successfully. Total bytes: " + 
-                std::to_string(total_bytes_sent));
-        } else {
-            // 4. Send a message to the remote endpoint
-            std::string message = "Hello from Synchronous bUDP Client!";
-            socket.send_to(boost::asio::buffer(message), receiver_endpoint);
-            std::cout << "Message sent cleanly." << std::endl;
-
-            // 5. Prepare a buffer to receive the reply back
-            std::array<char, 1024> recv_buf;
-            udp::endpoint sender_endpoint;
-
-            // This blocks until data arrives
-            size_t len = socket.receive_from(boost::asio::buffer(recv_buf), sender_endpoint);
-
-            std::cout << "Received reply: ";
-            std::cout.write(recv_buf.data(), len);
-            std::cout << std::endl;
-            if (interactiveMode) {
-                std::string input;
-                while (true) {
-                    std::cout << "Enter message to send (or 'exit' to quit): ";
-                    std::getline(std::cin, input);
-                    if (input == "exit") {
-                        break;
-                    }
-                    socket.send_to(boost::asio::buffer(input), receiver_endpoint);
-                    std::cout << "Message sent cleanly." << std::endl;
-
-                    std::array<char, 1024> recv_buf;
-                    udp::endpoint sender_endpoint;
-
-                    // This blocks until data arrives
-                    size_t len = socket.receive_from(boost::asio::buffer(recv_buf), sender_endpoint);
-
-                    std::cout << "Received reply: ";
-                    std::cout.write(recv_buf.data(), len);
-                    std::cout << std::endl;
-
-                }
-            }
-            else {
-                LOG(LoggerVerbosity::INFO, "Not in interactive mode, exiting after one message.");
+				uclient.SendMessage(input);
+				watchdog.CheckIn(); // Reset watchdog timer after each message sent
             }
         }
-    } catch (std::exception& e) {
-        std::cerr << "Exception: " << e.what() << std::endl;
+        else {
+            LOG(LoggerVerbosity::INFO, "Not in interactive mode, exiting after one message.");
+        }
     }
+
+
+    // Wait for threads to join
+    LOG(LoggerVerbosity::INFO, "Waiting threads to join...");
+    watchdog.StopMonitoring();
+    TM.WaitAllThreads(); // Wait for all threads to finish
 
     return 0;
 }

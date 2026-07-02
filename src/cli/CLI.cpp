@@ -211,7 +211,7 @@ void CliMenuProcessor::GetUserInput_thread() {
     Watchdog& watchdog = Watchdog::GetInstance();
 	ThreadManager& TM = ThreadManager::GetInstance();
 
-    while (!TM.force_stop) {
+    while (!TM.force_stop.load()) {
 		unsigned char ch = std::getchar(); // Get the character without waiting. Returns EOF on failure
 		if (ch == EOF) {
 			if (std::cin.eof()) {
@@ -254,7 +254,7 @@ void CliMenuProcessor::GetUserInput_thread() {
     // Set STDIN to non-blocking mode
     fcntl(STDIN_FILENO, F_SETFL, O_NONBLOCK); 
 
-    while (!TM.force_stop) {
+    while (!TM.force_stop.load()) {
 		unsigned char ch;
 		if (read(STDIN_FILENO, &ch, 1) > 0) { // Read a single character. Returns number of bytes read, or -1 on error
 			if (ch == EOF) {
@@ -294,7 +294,7 @@ void CliMenuProcessor::GetUserInput_thread() {
 	FD_ZERO(&fds);
 	FD_SET(STDIN_FILENO, &fds);
     
-    while (!TM.force_stop) {
+    while (!TM.force_stop.load()) {
 		int ret = select(1, &fds, NULL, NULL, &timeout);
 		if (ret > 0 && FD_ISSET(STDIN_FILENO, &fds)) {
 			unsigned char ch = getchar();
@@ -324,7 +324,7 @@ void CliMenuProcessor::GetUserInput_thread() {
     Watchdog& watchdog = Watchdog::GetInstance();
 	ThreadManager& TM = ThreadManager::GetInstance();
 
-    while (!TM.force_stop) {
+    while (!TM.force_stop.load()) {
 		unsigned char ch = getchar();
 		if (ch == EOF) {
 			if (std::cin.eof()) {

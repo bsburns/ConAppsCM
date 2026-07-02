@@ -202,13 +202,17 @@ int main(int argc, char* argv[]) {
         json j = StriperConfig;
         LOG(LoggerVerbosity::INFO, "Striper Configuration:" + j.dump(4));
     } else {
+        if (StriperMode != StriperModeE::NOTSET) {
+            LOG(LoggerVerbosity::ERR, "Striper Mode (-r,-t) specified but no striper configuration (-s) file provided. Disabling Striper Mode.");
+			return 1;
+		}
+        StriperMode = StriperModeE::NOTSET;
         LOG(LoggerVerbosity::DEBUG, "Striper Configuration Disabled");
 	}
 
     // Start WATCHDOG thread to monitor and adjust FEC stripes
     ThreadManager& TM = ThreadManager::GetInstance();
     Watchdog& watchdog = Watchdog::GetInstance();
-    // watchdog.SetTimeout(vm["watchdog"].as<double>();
     watchdog.SetTimeout(WatchdogTimeout);
     watchdog.SetOnTimeoutForceExit(false); // Force exit on watchdog timeout
 
@@ -259,7 +263,7 @@ int main(int argc, char* argv[]) {
             stripesMgr->SendMessage("Next message");
         }
 
-        if (TM.force_stop) {
+        if (TM.force_stop.load()) {
             // Timeout must have occured durring launching of stripe processes
             LOG(LoggerVerbosity::CRITICAL, "Exiting progam as FORCE_STOP was issued");
         } else {

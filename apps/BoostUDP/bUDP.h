@@ -16,6 +16,7 @@
 #include <set>
 #include <map>
 #include <filesystem>
+#include <utility>
 
 #include <boost/asio.hpp>
 
@@ -88,14 +89,53 @@ private:
     std::string dport;
     UdpSendMode sendMode;
     std::string serverIP;
+	udp::socket socket;
+	udp::resolver resolver;
+    udp::endpoint receiver_endpoint;
 
 public:
-    UdpClient(std::string serverp_ip_, std::string sport_, std::string dport_, UdpSendMode mode_)
-        : serverIP(serverp_ip_)
+    UdpClient(boost::asio::io_context& io_context, std::string serverp_ip_, std::string sport_, std::string dport_, UdpSendMode mode_)
+        : resolver(io_context)
+		, receiver_endpoint(*resolver.resolve(udp::v4(), serverIP, dport).begin())
+        , socket(io_context, udp::v4())
+        , serverIP(serverp_ip_)
         , sport(sport_)
         , dport(dport_)
         , sendMode(mode_)
     {
+        //boost::asio::io_context io_context;
+        // 2. Resolve the remote hostname or IP address and port
+        LOG(LoggerVerbosity::INFO, "Connecting to " + serverIP + ":" + sport + "::" + dport);
+
+        // 3. Open the UDP socket
+        int sourcePort;
+        try {
+            sourcePort = std::stoi(sport);
+        }
+        catch (std::exception& e) {
+            std::cerr << "\nException: UdpClient: convert source Port: " << e.what() << std::endl;
+            return;
+        }
+
+        try {
+            //udp::endpoint local_ep(udp::v4(), sourcePort);
+            socket.bind(boost::asio::ip::udp::endpoint(boost::asio::ip::udp::v4(), sourcePort));
+        }
+        catch (std::exception& e) {
+            std::cerr << "\nException: UdpClient: bind local endpoint: " << e.what() << std::endl;
+            return;
+        }
+
+        try
+        {
+            receiver_endpoint = *resolver.resolve(udp::v4(), serverIP, dport).begin();
+            //socket.open(udp::v4());
+        }
+        catch (const std::exception& e)
+        {
+            std::cerr << "\nException: UdpClient: Open socket with endpoint: " << e.what() << std::endl;
+            return;
+        }
     }
     
     int SendFile(std::string filename) {
@@ -103,27 +143,7 @@ public:
             LOG(LoggerVerbosity::ERR, "Send File does not exist!! file=" + filename);
             return 1;
         }
-        boost::asio::io_context io_context;
-        udp::endpoint receiver_endpoint;
 
-        // 2. Resolve the remote hostname or IP address and port
-        LOG(LoggerVerbosity::INFO, "Connecting to " + serverIP + ":" + sport + "::" + dport);
-        udp::resolver resolver(io_context);
-        receiver_endpoint = *resolver.resolve(udp::v4(), serverIP, dport).begin();
-
-        // 3. Open the UDP socket
-        int sourcePort;
-        try {
-            sourcePort = std::stoi(sport);
-        } catch (std::exception& e) {
-            std::cerr << "Exception: " << e.what() << std::endl;
-            return 10;
-        }
-        udp::socket socket(io_context, udp::endpoint(udp::v4(), sourcePort));
-        //socket.open(udp::v4());
-        LOG(LoggerVerbosity::INFO, "Socket opened to "
-            + serverIP + ":" + sport + "::" + dport
-        );
 
         LOG(LoggerVerbosity::INFO, "Sending file: " + filename);
         std::string message = "FILE_MODE: " + filename;
@@ -164,6 +184,22 @@ public:
             std::to_string(total_bytes_sent));
         return 0;
     }
+
+    void SendMessage(std::string msg) {
+        socket.send_to(boost::asio::buffer(msg), receiver_endpoint);
+        std::cout << "\nSent message: " << msg;
+
+        // Prepare a buffer to receive the reply back
+        std::array<char, 1024> recv_buf;
+        udp::endpoint sender_endpoint;
+
+        // This blocks until data arrives
+        size_t len = socket.receive_from(boost::asio::buffer(recv_buf), sender_endpoint);
+
+        std::cout << "\nReceived reply: ";
+        std::cout.write(recv_buf.data(), len);
+        std::cout << std::endl;
+	}
 };
 
 class UdpServer {
@@ -279,10 +315,11 @@ private:
             if (StriperMode == StriperModeE::TRANSMITTER) {
                 LOG(LoggerVerbosity::INFO, "Packetizing received data to send to striper");
                 // convert to packet format
-                auto udpHdr = std::make_shared<PacketHeaderUDP>();
+				uint16_t srcPort = 0;
+				uint32_t srcIP = 0;
                 auto pos = remote_str.find(":", 0);
-                
                 if (pos != std::string::npos) {
+					srcIP = inet_addr(remote_str.substr(0, pos).c_str());
                     try {
                         unsigned long parsed = std::stoul(remote_str.substr(pos + 1));
 
@@ -290,20 +327,35 @@ private:
                             throw std::out_of_range("Value exceeds 16-bit unsigned range");
                         }
 
-                        udpHdr->srcPort = static_cast<uint16_t>(parsed);
+                        srcPort = static_cast<uint16_t>(parsed);
                     }
                     catch (const std::invalid_argument& e) {
                         std::cout << "Error: Not a valid number.\n";
-                        udpHdr->srcPort = 0xFFFF;
+                        srcPort = 0xFFFF;
                     }
                     catch (const std::out_of_range& e) {
                         std::cout << "Error: Out of range.\n";
-                        udpHdr->srcPort = 0xFFFE;
+                        srcPort = 0xFFFE;
                     }
                 }
+
+				// Create IPv4 and UDP headers for the packet
+                PacketHeaders pktHdr;
+                auto ipHdr = std::make_shared<PacketHeaderIPv4>();
+				ipHdr->Version = 4;
+				ipHdr->IHL = 5; // 5 * 4 = 20 bytes
+				ipHdr->TOS = 0;
+				ipHdr->totalLength = ipHdr->Size() + PacketHeaderUDP().Size() + length;
+				ipHdr->TTL = 64;
+				ipHdr->Protocol = static_cast<uint8_t>(PacketHeaderType::UDP); // UDP
+				ipHdr->srcIP = srcIP;
+				ipHdr->dstIP = 0; // Destination IP can be set to 0 for now, or you can set it to a specific value if needed
+                pktHdr.AddHeader(ipHdr);
+
+                auto udpHdr = std::make_shared<PacketHeaderUDP>();
+				udpHdr->srcPort = srcPort;
                 udpHdr->dstPort = port;
                 udpHdr->length = udpHdr->Size() + length;
-                PacketHeaders pktHdr;
                 pktHdr.AddHeader(udpHdr);
                 LOG(LoggerVerbosity::INFO, "Add UDP header: " + udpHdr->to_string());
                 stripesMgr->SendPacket(pktHdr, recv_buffer_, length);
@@ -369,7 +421,7 @@ public:
 #endif
 
         ThreadManager& TM = ThreadManager::GetInstance();
-        for (uint32_t i = 0; i < WaitDebugAttachIterations && !TM.force_stop; i++) {
+        for (uint32_t i = 0; i < WaitDebugAttachIterations && !TM.force_stop.load(); i++) {
             // Note this is a delay loop to allow time to Attach Debugger to this process
             // Once attached, you can set i=101 in debugger to exit delay loop
 

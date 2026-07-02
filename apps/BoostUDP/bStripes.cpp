@@ -241,7 +241,7 @@ public:
     }
 
 
-    void SendPacket(PacketHeaders& headers_, std::vector<uint8_t>& data_, std::size_t length_) {
+    void SendPacket(PacketHeaders& headers_, const std::vector<uint8_t>& data_, std::size_t length_) {
         allocator<uint8_t, SegmentManager> byteAlloc(segment->get_segment_manager());
         StripeShmDequeMessage msg(byteAlloc);
         msg.msg_type = DeqMsgType::PACKET;
@@ -357,7 +357,7 @@ public:
         }
     }
 
-    void SendPacket(PacketHeaders& pkt_, std::vector<uint8_t>& data_, std::size_t length_) {
+    void SendPacket(PacketHeaders& pkt_, const std::vector<uint8_t>& data_, std::size_t length_) {
         // Select Stripe to send packet too
 
         if (stripe_processors.size() == 0) {
@@ -367,13 +367,6 @@ public:
         if (current_stripe >= stripe_processors.size()) current_stripe = 0;
         stripe_processors[current_stripe].SendPacket(pkt_, data_, length_);
         current_stripe++;
-        /*
-        if (stripe_it == stripe_processors.end()) {
-            stripe_it = stripe_processors.begin();
-        }
-        stripe_it->SendPacket(pkt_, data_, length_);
-        stripe_it++;
-        */
     }
 
     void SendExit(int stripe_num=-1) {
@@ -416,7 +409,7 @@ void StripesManager::SendMessage(std::string msg, int stripe_num) { // stripe_nu
     return impl->SendMessage(msg, stripe_num);
 }
 
-void StripesManager::SendPacket(PacketHeaders& pkt, std::vector<uint8_t>& data, std::size_t length) {
+void StripesManager::SendPacket(PacketHeaders& pkt, const std::vector<uint8_t>& data, std::size_t length) {
     return impl->SendPacket(pkt, data, length);
 }
 
@@ -433,7 +426,7 @@ StripeProcess::StripeProcess(std::string name_, StriperModeE mode_, AllStriperCo
     : name(name_) 
     , mode(mode_)
     , striperConfig(striper_config_)
-    , fecEngine(mode_, striper_config_)
+    , fecEngine(name_, mode_, striper_config_)
     , segment(boost::interprocess::managed_shared_memory(open_only, name.c_str()))
 {
     LOG(LoggerVerbosity::INFO, "This is a Stripe Processor: " + name);
@@ -459,7 +452,7 @@ StripeProcess::StripeProcess(std::string name_, StriperModeE mode_, AllStriperCo
             // Read and pop elements from the deque
             LOG(LoggerVerbosity::INFO, "Found deque with " + std::to_string(my_data->stripe_deque.size()) + " elements.");
             bool exit_loop = false;
-            while (!exit_loop && !TM.force_stop) {
+            while (!exit_loop && !TM.force_stop.load()) {
                 bool msg_available;
                 scoped_lock<interprocess_mutex> lock(my_data->mutex);
                 my_data->cond_nonempty.wait(lock, [&]() {
@@ -467,14 +460,48 @@ StripeProcess::StripeProcess(std::string name_, StriperModeE mode_, AllStriperCo
                     });
 
                 // Deque Not empty
-                watchdog.CheckIn();
                 while (!my_data->stripe_deque.empty()) {
                     StripeShmDequeMessage msg = my_data->stripe_deque.front();
                     switch (msg.msg_type) {
                     case DeqMsgType::MESSAGE:
                         break;
                     case DeqMsgType::PACKET:
-                        this->ReceivedPacket(msg);
+                    {
+                        PacketHeaders pkt_headers;
+                        for (const auto& shmHdr : msg.headers) {
+                            std::shared_ptr<PacketHeaderBase> hdr = nullptr;
+                            switch (shmHdr.htype) {
+                            case PacketHeaderType::IPv4:
+                                hdr = std::make_shared<PacketHeaderIPv4>();
+                                break;
+                            case PacketHeaderType::RTP:
+                                hdr = std::make_shared<PacketHeaderRTP>();
+                                break;
+                            case PacketHeaderType::SMPTE:
+                                hdr = std::make_shared<PacketHeaderSMPTE>();
+                                break;
+                            case PacketHeaderType::UDP:
+                                hdr = std::make_shared<PacketHeaderUDP>();
+                                break;
+                            default:
+                                LOG(LoggerVerbosity::ERR, "Unknown header type in shared memory: " + std::string(magic_enum::enum_name(shmHdr.htype)));
+                            }
+                            if (hdr == nullptr) {
+                                LOG(LoggerVerbosity::ERR, "Failed to create header object for type: " + std::string(magic_enum::enum_name(shmHdr.htype)));
+                                break;
+                            }
+                            std::vector<uint8_t> header_vec(shmHdr.header.begin(), shmHdr.header.end());
+                            auto deserialized_hdr = hdr->deserialize(header_vec);
+                            pkt_headers.AddHeader(std::move(deserialized_hdr), -1);
+                        }
+
+                        std::vector<uint8_t> vec_data(msg.data.begin(), msg.data.end());
+                        if (vec_data.size() != static_cast<size_t>(msg.msg_length)) {
+                            LOG(LoggerVerbosity::ERR, "Data size does not match msg_length in shared memory: "
+                                + std::to_string(vec_data.size()) + " vs " + std::to_string(msg.msg_length));
+                        }
+                        this->ReceivedPacket(pkt_headers, vec_data, msg.msg_length);
+                    }
                         break;
                     case DeqMsgType::EXIT_PROCESS:
                         exit_loop = true;
@@ -485,7 +512,7 @@ StripeProcess::StripeProcess(std::string name_, StriperModeE mode_, AllStriperCo
                     ss << msg;
                     LOG(LoggerVerbosity::INFO, "Popped: " + ss.str());
                     my_data->stripe_deque.pop_front();
-
+                    watchdog.CheckIn();
                 }
             }
         }
@@ -495,25 +522,157 @@ StripeProcess::StripeProcess(std::string name_, StriperModeE mode_, AllStriperCo
         });
 }
 
-void StripeProcess::ReceivedPacket(StripeShmDequeMessage& msg) {
+
+void StripeProcess::ReceivedPacket(PacketHeaders& headers, const std::vector<uint8_t>& data, std::size_t length) {
     if (mode == StriperModeE::TRANSMITTER) {
         // Perform SMPTE FEC on packet
-
+        fecEngine.PerformFEC(headers, data, length);
     } else {
 
     }
 }
 
-//class SMPTE_FEC_Engine {
-//private:
-//    StriperModeE mode;
-//    AllStriperConfig* striperConfig;
-//
-//public:
-//    SMPTE_FEC_Engine(StriperModeE mode_, AllStriperConfig* striper_config_)
-//        : mode(mode_)
-//        , striperConfig(striper_config_)
-//    {
-//
-//    }
-//};
+// FEC Engine Methods
+SMPTE_FEC_Engine::SMPTE_FEC_Engine(std::string owning_stripe_name_, StriperModeE mode_, AllStriperConfig* striper_config_)
+    : owning_stripe_name(owning_stripe_name_)
+    , mode(mode_)
+    , striperConfig(striper_config_)
+	, StatsRxPackets(owning_stripe_name +":FEC_Engine_RxPkts", nullptr)
+    , StatsTxPackets(owning_stripe_name + ":FEC_Engine_TxPkts", nullptr)
+    , StatsFillPackets(owning_stripe_name + ":FEC_Engine_FillPkts", nullptr)
+    , StatsFecColPackets(owning_stripe_name + ":FEC_Engine_FecColPkts", nullptr)
+    , StatsFecRowPackets(owning_stripe_name + ":FEC_Engine_FecRowPkts", nullptr)
+{
+    ThreadManager& TM = ThreadManager::GetInstance();
+    Watchdog& watchdog = Watchdog::GetInstance();
+
+	// Initialize configuration parameters for FEC based on striperConfig
+    number_columns = striperConfig->stripeCfg.Parm_L_cols;
+    number_rows = striperConfig->stripeCfg.Parm_D_rows;
+    switch (striperConfig->stripeCfg.Mode) {
+        case FEC_Mode::NONE:
+            base_payload_type = RTP_PayloadTypeE::NO_FEC;
+            break;
+        case FEC_Mode::OptionA: // Column only FEC
+            base_payload_type = RTP_PayloadTypeE::MODE_A_FEC;
+			number_rows += 1; // Add one row for FEC
+            break;
+		case FEC_Mode::OptionB: // Row and Column FEC
+            base_payload_type = RTP_PayloadTypeE::MODE_B_FEC;
+			number_rows += 1; // Add one row for FEC
+			number_columns += 1; // Add one column for FEC
+            break;
+        default:
+            LOG(LoggerVerbosity::ERR, "Unknown FEC Mode in configuration");
+            base_payload_type = RTP_PayloadTypeE::NOTSET;
+            break;
+	}
+	block_size = number_rows * number_columns;
+	dport_data = striperConfig->stripeCfg.StartUdpDstPortNumber;
+	dport_col_fec = dport_data + 2;
+	dport_row_fec = dport_data + 4;
+	double target_packet_rate_period = 1.0 / striperConfig->stripeCfg.MinPacketRate_pps;
+
+	current_column_fec_packets.resize(number_columns);
+
+	// Open UDP Clients for out-going FEC streams
+    // DPORT= N>5000(even), Col FEC=N+2 Row FEC=N+4
+
+    TM.StartThread("IdleFill", [this, &watchdog, &TM, &target_packet_rate_period]() {
+        std::chrono::duration<double> duration(target_packet_rate_period);
+        while (!TM.force_stop.load()) {
+            // Idle loop to fill FEC block 
+            if (this->idle.load() && this->block_started.load()) {
+                LOG(LoggerVerbosity::DEBUG, "IdleFill: FEC block started but idle, injecting fill packets to maintain rate");
+                // Inject fill packets here
+			}
+			this->idle.store(true);
+            std::this_thread::sleep_for(duration);
+        }
+        });
+}
+
+int SMPTE_FEC_Engine::PerformFEC(PacketHeaders& headers, const std::vector<uint8_t>& data, std::size_t length)
+{
+    // Implement SMPTE FEC algorithm here
+	block_started.store(true);
+	idle.store(false);
+	bool send_fec_column_fec = false;
+	bool send_fec_row_fec = false;
+
+    StatsRxPackets.addValue(length);
+
+    auto hdr = headers.headers.back();
+	auto ip_hdr = std::dynamic_pointer_cast<PacketHeaderIPv4>(hdr);
+    if (!ip_hdr) {
+        LOG(LoggerVerbosity::ERR, "First header is not IPv4, cannot perform FEC: type="
+            + std::string(magic_enum::enum_name(hdr->header_type)));
+        return -1;
+	}
+
+    // Create RTP Header
+	std::shared_ptr<PacketHeaderRTP> rtp_hdr = std::make_shared<PacketHeaderRTP>();
+    rtp_hdr->payload_type = static_cast<uint8_t>(base_payload_type);
+    rtp_hdr->sequence_number = this->sequence_number.fetch_add(1, std::memory_order_relaxed); // atomic increment
+    auto now = std::chrono::system_clock::now();
+    auto duration = now.time_since_epoch();
+    auto millis = std::chrono::duration_cast<std::chrono::milliseconds>(duration);
+
+    rtp_hdr->timestamp = millis.count(); // Set appropriate timestamp
+    rtp_hdr->sync_src = ip_hdr->srcIP; // Set appropriate sync source
+	headers.AddHeader(rtp_hdr, 0); // Add RTP header at the beginning
+    LOG(LoggerVerbosity::INFO, "Performing FEC on packet with length: " + std::to_string(length)
+    + " RTP_SEQ=" + std::to_string(rtp_hdr->sequence_number)
+    + " RxPktStats:" + StatsRxPackets.ToString());
+
+    switch (base_payload_type) {
+    case RTP_PayloadTypeE::NO_FEC:
+        break;
+    case RTP_PayloadTypeE::MODE_A_FEC: // Column FEC
+    {
+        auto cell_index = rtp_hdr->sequence_number % block_size;
+        auto row = cell_index / number_columns;
+        auto column = cell_index % number_columns;
+        if (row == number_rows - 2 && column == number_columns - 1) {
+            LOG(LoggerVerbosity::INFO, "MODE_A: reached FEC ROW: row="
+                + std::to_string(row)
+                + " col=" + std::to_string(column));
+            send_fec_column_fec = true;
+        }
+        if (cell_index == 0) {
+            LOG(LoggerVerbosity::INFO, "Starting new FEC block: seq=" + std::to_string(rtp_hdr->sequence_number)
+                + " row=" + std::to_string(row) + " column=" + std::to_string(column));
+            for (auto& fec_pkt : current_column_fec_packets) {
+                fec_pkt.Clear();
+            }
+        }
+        current_column_fec_packets[column].AddPacket(rtp_hdr, data, length);
+    }
+        break;
+    case RTP_PayloadTypeE::MODE_B_FEC: // Row and Column FEC
+        break;
+    default:
+        LOG(LoggerVerbosity::ERR, "Base Payload type not valid!! type="
+            + std::string(magic_enum::enum_name(base_payload_type)));
+        return 1;
+    }
+
+	// Send packet to UDP Port
+// Stopped here
+	// If we have reached the end of a FEC block, send the FEC packets
+    if (send_fec_column_fec) {
+        LOG(LoggerVerbosity::INFO, "Sending Column FEC packets for block ending at seq="
+            + std::to_string(rtp_hdr->sequence_number));
+        for (size_t col = 0; col < current_column_fec_packets.size(); ++col) {
+            auto& fec_pkt = current_column_fec_packets[col];
+            if (fec_pkt.payload.size() > 0) {
+                // Send fec_pkt to UDP Port for column FEC
+                StatsFecColPackets.addValue(fec_pkt.payload.size());
+                LOG(LoggerVerbosity::INFO, "Sent Column FEC packet for column " + std::to_string(col)
+                    + " size=" + std::to_string(fec_pkt.payload.size())
+                    + " FecColStats:" + StatsFecColPackets.ToString());
+            }
+        }
+	}
+	return 0; // Return 0 for success
+}
