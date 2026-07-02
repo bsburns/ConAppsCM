@@ -422,11 +422,12 @@ void StripesManager::WaitForComplete() {
 }
 
 // Class Stripe Process Methods
-StripeProcess::StripeProcess(std::string name_, StriperModeE mode_, AllStriperConfig* striper_config_)
+StripeProcess::StripeProcess(std::string name_, uint16_t stripe_num_, StriperModeE mode_, AllStriperConfig* striper_config_)
     : name(name_) 
+    , stripe_num(stripe_num_)
     , mode(mode_)
     , striperConfig(striper_config_)
-    , fecEngine(name_, mode_, striper_config_)
+    , fecEngine(name_, stripe_num_, mode_, striper_config_)
     , segment(boost::interprocess::managed_shared_memory(open_only, name.c_str()))
 {
     LOG(LoggerVerbosity::INFO, "This is a Stripe Processor: " + name);
@@ -533,8 +534,9 @@ void StripeProcess::ReceivedPacket(PacketHeaders& headers, const std::vector<uin
 }
 
 // FEC Engine Methods
-SMPTE_FEC_Engine::SMPTE_FEC_Engine(std::string owning_stripe_name_, StriperModeE mode_, AllStriperConfig* striper_config_)
+SMPTE_FEC_Engine::SMPTE_FEC_Engine(std::string owning_stripe_name_, uint16_t stripe_num_, StriperModeE mode_, AllStriperConfig* striper_config_)
     : owning_stripe_name(owning_stripe_name_)
+    , stripe_num(stripe_num_)
     , mode(mode_)
     , striperConfig(striper_config_)
 	, StatsRxPackets(owning_stripe_name +":FEC_Engine_RxPkts", nullptr)
@@ -577,22 +579,77 @@ SMPTE_FEC_Engine::SMPTE_FEC_Engine(std::string owning_stripe_name_, StriperModeE
 
 	// Open UDP Clients for out-going FEC streams
     // DPORT= N>5000(even), Col FEC=N+2 Row FEC=N+4
+    boost::asio::io_context io_context;
+    std::string ServerIP = "127.0.0.1";
+    if (!striperConfig->stripeCfg.StripeReceiverIpAddress.empty()) ServerIP = striperConfig->stripeCfg.StripeReceiverIpAddress;
+    
+	std::string sport = std::to_string(stripe_num);
+	std::string dport_data = std::to_string(striperConfig->stripeCfg.StartUdpDstPortNumber);
+    std::string dport_ColFEC = std::to_string(striperConfig->stripeCfg.StartUdpDstPortNumber + 2);
+    std::string dport_RowFEC = std::to_string(striperConfig->stripeCfg.StartUdpDstPortNumber + 4);
+    udpClientData = std::make_shared< UdpClient>(io_context, ServerIP, sport, dport_data, UdpSendMode::PACKET);
+    udpClientColFEC = std::make_shared< UdpClient>(io_context, ServerIP, sport, dport_ColFEC, UdpSendMode::PACKET);
+    udpClientRowFEC = std::make_shared< UdpClient>(io_context, ServerIP, sport, dport_RowFEC, UdpSendMode::PACKET);
+    if (udpClientData == nullptr) {
+        LOG(LoggerVerbosity::ERR, "Could not create UDP client for stripe data: Stripe=" + owning_stripe_name
+            + " ServerIP=" + ServerIP + " SrcPort=" + sport
+            + " DstPort=" + dport_data
+            );
+        return;
+    }
+    if (udpClientColFEC == nullptr) {
+        LOG(LoggerVerbosity::ERR, "Could not create UDP client for stripe column FEC: Stripe=" + owning_stripe_name
+            + " ServerIP=" + ServerIP + " SrcPort=" + sport
+            + " DstPort=" + dport_ColFEC
+        );
+        return;
+    }
+    if (udpClientRowFEC == nullptr) {
+        LOG(LoggerVerbosity::ERR, "Could not create UDP client for stripe row FEC: Stripe=" + owning_stripe_name
+            + " ServerIP=" + ServerIP + " SrcPort=" + sport
+            + " DstPort=" + dport_RowFEC
+        );
+        return;
+    }
+
+    // Tell UDP Server we are in Packet Mode:
+	/* Won't work until we implement a UDP Server that can receive this message and change mode
+    
+    udpClientData->SendMessage("PACKET_MODE:");
+    udpClientColFEC->SendMessage("PACKET_MODE:");
+    udpClientRowFEC->SendMessage("PACKET_MODE:");
+    */
 
     TM.StartThread("IdleFill", [this, &watchdog, &TM, &target_packet_rate_period]() {
         std::chrono::duration<double> duration(target_packet_rate_period);
+		std::vector<uint8_t> fill_packet(1, 0); // Fill packet of 1 byte
+		PacketHeaders fill_headers;
+        auto ipHdr = std::make_shared<PacketHeaderIPv4>();
+        ipHdr->Version = 4;
+        ipHdr->IHL = 5; // 5 * 4 = 20 bytes
+        ipHdr->TOS = 0;
+        ipHdr->totalLength = 0;
+        ipHdr->TTL = 64;
+        ipHdr->Protocol = static_cast<uint8_t>(PacketHeaderType::UDP); // UDP
+        ipHdr->srcIP = 0;
+        ipHdr->dstIP = 0; // Destination IP can be set to 0 for now, or you can set it to a specific value if needed
+        fill_headers.AddHeader(ipHdr);
+
         while (!TM.force_stop.load()) {
             // Idle loop to fill FEC block 
             if (this->idle.load() && this->block_started.load()) {
                 LOG(LoggerVerbosity::DEBUG, "IdleFill: FEC block started but idle, injecting fill packets to maintain rate");
                 // Inject fill packets here
+				this->PerformFEC(fill_headers, fill_packet, fill_packet.size(), true);
 			}
 			this->idle.store(true);
+
             std::this_thread::sleep_for(duration);
         }
         });
 }
 
-int SMPTE_FEC_Engine::PerformFEC(PacketHeaders& headers, const std::vector<uint8_t>& data, std::size_t length)
+int SMPTE_FEC_Engine::PerformFEC(PacketHeaders& headers, const std::vector<uint8_t>& data, std::size_t length, bool fill)
 {
     // Implement SMPTE FEC algorithm here
 	block_started.store(true);
@@ -638,6 +695,7 @@ int SMPTE_FEC_Engine::PerformFEC(PacketHeaders& headers, const std::vector<uint8
                 + std::to_string(row)
                 + " col=" + std::to_string(column));
             send_fec_column_fec = true;
+            block_started.store(false);
         }
         if (cell_index == 0) {
             LOG(LoggerVerbosity::INFO, "Starting new FEC block: seq=" + std::to_string(rtp_hdr->sequence_number)

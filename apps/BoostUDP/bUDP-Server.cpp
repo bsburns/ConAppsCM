@@ -13,11 +13,13 @@
 #include <boost/interprocess/sync/interprocess_condition.hpp>
 
 #include "bUDP.h"
+#include "bUDP-Server.h"
 #include "bStriperConfig.h"
 #include "bStripes.h"
 #include "commandLineParser.h"
 #include "watchdog.h"
 #include "threadManager.h"
+#include "debug_process.h"
 
 
 
@@ -240,7 +242,31 @@ int main(int argc, char* argv[]) {
         Debugger debug;
         debug.Launch(WaitDebugAttachIterations);
 
-        StripeProc = new StripeProcess(StripeProcessName, StriperMode, &StriperConfig);
+        // Get Stripe number from stripe name
+        auto pos = StripeProcessName.find("-", 0);
+        uint16_t stripe_num = 0xFFFC;
+        if (pos != std::string::npos) {
+            try {
+                unsigned long parsed = std::stoul(StripeProcessName.substr(pos + 1));
+
+                if (parsed > UINT16_MAX) {
+                    throw std::out_of_range("Value exceeds 16-bit unsigned range");
+                }
+
+                stripe_num = static_cast<uint16_t>(parsed);
+            }
+            catch (const std::invalid_argument& e) {
+                std::cout << "Error: Not a valid number.\n";
+                stripe_num = 0xFFFF;
+            }
+            catch (const std::out_of_range& e) {
+                std::cout << "Error: Out of range.\n";
+                stripe_num = 0xFFFE;
+            }
+        }
+
+        LOG(LoggerVerbosity::INFO, "Creating Stripe Process: name=" + StripeProcessName + " stripe_num=" + std::to_string(stripe_num));
+        StripeProc = new StripeProcess(StripeProcessName, stripe_num, StriperMode, &StriperConfig);
     }
     else {
         // Main UDP Server

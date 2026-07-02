@@ -18,6 +18,8 @@
 #include "watchdog.h"
 #include "PacketHeader.h"
 #include "bUDP.h"
+#include "bUDP-Client.h"
+
 
 std::string show_version(bool use_cout = false) {
     std::stringstream ss;

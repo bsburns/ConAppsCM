@@ -33,8 +33,8 @@ enum class PacketHeaderType : uint8_t {
 	ICMPv6 = 58,
 	OSPF = 89,
 	SCTP = 132,
-	RTP = 1000,
-	SMPTE = 1001,
+	RTP = 100,
+	SMPTE = 101,
 };
 
 static std::string ip_to_string(uint32_t ip) {

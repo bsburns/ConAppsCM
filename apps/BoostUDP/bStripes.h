@@ -14,6 +14,7 @@
 #include <boost/interprocess/managed_shared_memory.hpp>
 #include "bStriperConfig.h"
 #include "PacketHeader/PacketHeader.h"
+#include "bUDP-Client.h"
 #include "statistics.h"
 
 
@@ -99,6 +100,7 @@ public:
 class SMPTE_FEC_Engine {
 private:
 	std::string owning_stripe_name;
+    uint16_t stripe_num;
     StriperModeE mode;
     AllStriperConfig* striperConfig;
     std::atomic<uint16_t> sequence_number{ 0 };
@@ -115,6 +117,9 @@ private:
     std::atomic<bool> idle{ true };
 	FEC_Packet current_row_fec_packet;
 	std::vector<FEC_Packet> current_column_fec_packets;
+    std::shared_ptr<UdpClient> udpClientData = nullptr;
+    std::shared_ptr<UdpClient> udpClientColFEC = nullptr;
+    std::shared_ptr<UdpClient> udpClientRowFEC = nullptr;
 
     // Statistics
     StatisticsBasic<uint64_t> StatsRxPackets;
@@ -124,14 +129,15 @@ private:
     StatisticsBasic<uint64_t> StatsFecRowPackets;
 
 public:
-    SMPTE_FEC_Engine(std::string owning_stripe_name_, StriperModeE mode_, AllStriperConfig* striper_config_);
+    SMPTE_FEC_Engine(std::string owning_stripe_name_, uint16_t stripe_num, StriperModeE mode_, AllStriperConfig* striper_config_);
 
-	int PerformFEC(PacketHeaders& headers, const std::vector<uint8_t>& data, std::size_t length);
+	int PerformFEC(PacketHeaders& headers, const std::vector<uint8_t>& data, std::size_t length, bool fill = false);
 };
 
 class StripeProcess {
 private:
     std::string name;
+    uint16_t stripe_num;
     StriperModeE mode;
     AllStriperConfig* striperConfig;
     boost::interprocess::managed_shared_memory segment;
@@ -140,7 +146,7 @@ private:
     void ReceivedPacket(PacketHeaders& headers, const std::vector<uint8_t>& data, std::size_t length);
 public:
     StripeProcess() = delete;
-    StripeProcess(std::string name_, StriperModeE mode_, AllStriperConfig* striper_config_);
+    StripeProcess(std::string name_, uint16_t stripe_num_, StriperModeE mode_, AllStriperConfig* striper_config_);
 
     // Rule of five (disable copy, allow move)
     StripeProcess(const StripeProcess&) = delete;

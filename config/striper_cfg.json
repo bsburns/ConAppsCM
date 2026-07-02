@@ -12,6 +12,7 @@
         "Parm_D_rows": 100,
         "Parm_L_cols": 5,
         "StartUdpDstPortNumber": 5000,
-        "StartUdpSrcPortNumber": 100
+        "StartUdpSrcPortNumber": 100,
+        "StripeReceiverIpAddress": ""
     }
 }
