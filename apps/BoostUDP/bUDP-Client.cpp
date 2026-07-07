@@ -1,7 +1,7 @@
 /*------------------------------------------------------------------
  * bUDP-Client.cpp
  * 
- * CBoost based UDP Client application to test the bUDP-Server
+ * Boost based UDP Client application to test the bUDP-Server
  *
  * June 2026, Barry S. Burns (B2)
  *

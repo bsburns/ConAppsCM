@@ -26,12 +26,14 @@
 #include "PacketHeader/PacketHeader.h"
 #include "bUDP.h"
 
+
 class UdpServer {
 public:
     // Bind to the given port on all available network interfaces
-    UdpServer(boost::asio::io_context& io_context, short port_, std::string out_dir_, std::shared_ptr<StripesManager> stripes_mgr_, StriperModeE striper_mode_)
+    UdpServer(boost::asio::io_context& io_context, short port_, UdpStriperPortE port_mode_, std::string out_dir_, std::shared_ptr<StripesManager> stripes_mgr_, StriperModeE striper_mode_)
         : socket_(io_context, udp::endpoint(udp::v4(), port_))
         , port(port_)
+        , port_mode(port_mode_)
         , stripesMgr(stripes_mgr_)
         , StriperMode(striper_mode_)
         , out_dir(out_dir_)
@@ -47,6 +49,7 @@ private:
     std::shared_ptr<StripesManager> stripesMgr;
     StriperModeE StriperMode;
     short port;
+	UdpStriperPortE port_mode;
     std::string out_dir; // Directory where receved files will be saved
     udp::socket socket_;
     udp::endpoint remote_endpoint_;
@@ -92,10 +95,38 @@ private:
         if (inserted) {
             KnownClientConnections[remote_endpoint_].connection_time = std::chrono::system_clock::now();
             message = std::string(reinterpret_cast<const char*>(recv_buffer_.data()), length);
-            LOG(LoggerVerbosity::INFO, "New Client Connected " + remote_str);
+            LOG(LoggerVerbosity::INFO, "New Client Connected " 
+                + remote_str 
+                + ":" + std::to_string(port)
+            );
 
             auto result = message.compare(0, 10, "FILE_MODE:");
             if (result == 0) {
+                uint16_t srcPort = 0;
+                uint32_t srcIP = 0;
+                auto pos = remote_str.find(":", 0);
+                if (pos != std::string::npos) {
+                    srcIP = inet_addr(remote_str.substr(0, pos).c_str());
+                    try {
+                        unsigned long parsed = std::stoul(remote_str.substr(pos + 1));
+
+                        if (parsed > UINT16_MAX) {
+                            throw std::out_of_range("Value exceeds 16-bit unsigned range");
+                        }
+
+                        srcPort = static_cast<uint16_t>(parsed);
+                    }
+                    catch (const std::invalid_argument& e) {
+                        std::cout << "Error: Not a valid number.\n";
+                        srcPort = 0xFFFF;
+                    }
+                    catch (const std::out_of_range& e) {
+                        std::cout << "Error: Out of range.\n";
+                        srcPort = 0xFFFE;
+                    }
+                }
+				KnownClientConnections[remote_endpoint_].srcIP = srcIP;
+				KnownClientConnections[remote_endpoint_].srcPort = srcPort;
                 KnownClientConnections[remote_endpoint_].mode = UdpSendMode::SEND_FILE;
                 KnownClientConnections[remote_endpoint_].file_chunks.clear();
                 fs::path filePath(message.substr(10)); // Extract file name after "FILE_MODE:"
@@ -107,14 +138,16 @@ private:
                 }
             }
             else {
-                result = message.compare(0, 10, "PACKET_MODE:");
+                result = message.compare(0, 12, "PACKET_MODE:");
                 if (result == 0) {
                     KnownClientConnections[remote_endpoint_].mode = UdpSendMode::PACKET;
                 } else {
                     KnownClientConnections[remote_endpoint_].mode = UdpSendMode::MESSAGE;
                 }
             }
-            LOG(LoggerVerbosity::INFO, remote_str + ": mode = " +
+            LOG(LoggerVerbosity::INFO, remote_str 
+                + ":" + std::to_string(port)
+                + " - mode = " +
                 std::string(magic_enum::enum_name(KnownClientConnections[remote_endpoint_].mode)));
         } else {
             // Known Connection
@@ -145,30 +178,6 @@ private:
             if (StriperMode == StriperModeE::TRANSMITTER) {
                 LOG(LoggerVerbosity::INFO, "Packetizing received data to send to striper");
                 // convert to packet format
-                uint16_t srcPort = 0;
-                uint32_t srcIP = 0;
-                auto pos = remote_str.find(":", 0);
-                if (pos != std::string::npos) {
-                    srcIP = inet_addr(remote_str.substr(0, pos).c_str());
-                    try {
-                        unsigned long parsed = std::stoul(remote_str.substr(pos + 1));
-
-                        if (parsed > UINT16_MAX) {
-                            throw std::out_of_range("Value exceeds 16-bit unsigned range");
-                        }
-
-                        srcPort = static_cast<uint16_t>(parsed);
-                    }
-                    catch (const std::invalid_argument& e) {
-                        std::cout << "Error: Not a valid number.\n";
-                        srcPort = 0xFFFF;
-                    }
-                    catch (const std::out_of_range& e) {
-                        std::cout << "Error: Out of range.\n";
-                        srcPort = 0xFFFE;
-                    }
-                }
-
                 // Create IPv4 and UDP headers for the packet
                 PacketHeaders pktHdr;
                 auto ipHdr = std::make_shared<PacketHeaderIPv4>();
@@ -178,20 +187,47 @@ private:
                 ipHdr->totalLength = ipHdr->Size() + PacketHeaderUDP().Size() + length;
                 ipHdr->TTL = 64;
                 ipHdr->Protocol = static_cast<uint8_t>(PacketHeaderType::UDP); // UDP
-                ipHdr->srcIP = srcIP;
+                ipHdr->srcIP = KnownClientConnections[remote_endpoint_].srcIP;
                 ipHdr->dstIP = 0; // Destination IP can be set to 0 for now, or you can set it to a specific value if needed
                 pktHdr.AddHeader(ipHdr);
 
                 auto udpHdr = std::make_shared<PacketHeaderUDP>();
-                udpHdr->srcPort = srcPort;
+                udpHdr->srcPort = KnownClientConnections[remote_endpoint_].srcPort;
                 udpHdr->dstPort = port;
                 udpHdr->length = udpHdr->Size() + length;
                 pktHdr.AddHeader(udpHdr);
                 LOG(LoggerVerbosity::INFO, "Add UDP header: " + udpHdr->to_string());
                 stripesMgr->SendPacket(pktHdr, recv_buffer_, length);
+            } else if (StriperMode == StriperModeE::RECEIVER) {
+				// convert to packet format = Expect recv_buffer_ to start with RTP Header, so we need to add the original IP and UDP headers to the packet
+                PacketHeaders pktHdr;
 
-            }
-            else { // Non Transmitter Mode, so save Save file
+                // Create IPv4 and UDP headers for the packet
+                auto ipHdr = std::make_shared<PacketHeaderIPv4>();
+                ipHdr->Version = 4;
+                ipHdr->IHL = 5; // 5 * 4 = 20 bytes
+                ipHdr->TOS = 0;
+                ipHdr->totalLength = ipHdr->Size() + PacketHeaderUDP().Size() + length;
+                ipHdr->TTL = 64;
+                ipHdr->Protocol = static_cast<uint8_t>(PacketHeaderType::UDP); // UDP
+                ipHdr->srcIP = KnownClientConnections[remote_endpoint_].srcIP;
+                ipHdr->dstIP = 0; // Destination IP can be set to 0 for now, or you can set it to a specific value if needed
+                pktHdr.AddHeader(ipHdr);
+
+                auto udpHdr = std::make_shared<PacketHeaderUDP>();
+                udpHdr->srcPort = KnownClientConnections[remote_endpoint_].srcPort;
+                udpHdr->dstPort = port;
+                udpHdr->length = udpHdr->Size() + length;
+                pktHdr.AddHeader(udpHdr, -1);
+                LOG(LoggerVerbosity::INFO, "Add UDP header: " + udpHdr->to_string());
+
+				// Get RTP Header from recv_buffer_ and add it to pktHdr
+                auto rtpHdr = std::make_shared<PacketHeaderRTP>();
+                rtpHdr->deserialize(recv_buffer_);
+                pktHdr.AddHeader(rtpHdr, -1);
+
+                stripesMgr->ReceivePacket(port_mode, pktHdr, recv_buffer_, length);
+            } else { // Non Transmitter/Receiver Mode, so save Save file
                 if (fh.chunkSize > 0) {
                     auto [cit, inserted] =
                         KnownClientConnections[remote_endpoint_].file_chunks.emplace(

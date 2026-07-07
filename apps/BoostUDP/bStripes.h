@@ -53,6 +53,7 @@ public:
     int Initialize(StriperModeE mode_, std::string path_, std::string args_);
     void SendMessage(std::string msg, int stripe_num=-1); // stripe_num == -1 means all stripes
     void SendPacket(PacketHeaders& headers, const std::vector<uint8_t>& data, std::size_t length);
+    void ReceivePacket(UdpStriperPortE port_mode, PacketHeaders& headers, std::vector<uint8_t>& data, std::size_t length);
     void SendExit(int stripe_num = -1); // stripe_num == -1 means all stripes
     void WaitForComplete();
 
@@ -131,19 +132,20 @@ private:
 public:
     SMPTE_FEC_Engine(std::string owning_stripe_name_, uint16_t stripe_num, StriperModeE mode_, AllStriperConfig* striper_config_);
 
-	int PerformFEC(PacketHeaders& headers, const std::vector<uint8_t>& data, std::size_t length, bool fill = false);
+	int PerformFEC(PacketHeaders& headers, std::vector<uint8_t>& data, std::size_t length, bool fill = false);
 };
 
 class StripeProcess {
 private:
     std::string name;
+    std::string SharedDataStr;
     uint16_t stripe_num;
     StriperModeE mode;
     AllStriperConfig* striperConfig;
     boost::interprocess::managed_shared_memory segment;
-    SMPTE_FEC_Engine fecEngine;
+    std::unique_ptr<SMPTE_FEC_Engine> fecEngine = nullptr;
 
-    void ReceivedPacket(PacketHeaders& headers, const std::vector<uint8_t>& data, std::size_t length);
+    void ReceivedPacket(PacketHeaders& headers, std::vector<uint8_t>& data, std::size_t length);
 public:
     StripeProcess() = delete;
     StripeProcess(std::string name_, uint16_t stripe_num_, StriperModeE mode_, AllStriperConfig* striper_config_);

@@ -85,13 +85,12 @@ public:
             return;
         }
     }
-    
+
     int SendFile(std::string filename) {
         if (!fs::exists(filename)) {
             LOG(LoggerVerbosity::ERR, "Send File does not exist!! file=" + filename);
             return 1;
         }
-
 
         LOG(LoggerVerbosity::INFO, "Sending file: " + filename);
         std::string message = "FILE_MODE: " + filename;
@@ -133,8 +132,63 @@ public:
         return 0;
     }
 
-    int SendPacket(PacketHeaders& headers, const std::vector<uint8_t>& data, std::size_t length) {
-        LOG(LoggerVerbosity::INFO, "Sending Packet: len=" + std::to_string(length));
+    int StartPacketMode() {
+        std::string message = "PACKET_MODE:";
+        if (socket.is_open()) {
+            LOG(LoggerVerbosity::INFO, "Starting Packet Mode: " + message);
+        }
+        else {
+            LOG(LoggerVerbosity::ERR, "Socket is not open. Cannot start Packet Mode.");
+            return 1;
+        }
+        socket.send_to(boost::asio::buffer(message), receiver_endpoint);
+        return 0;
+    }
+    
+    int SendPacket(PacketHeaders& headers, std::vector<uint8_t>& data, std::size_t length) {
+        LOG(LoggerVerbosity::INFO, "Sending Packet: len=" + std::to_string(length)
+            + " hdr_length=" + std::to_string(headers.length));
+		auto rc = headers.MakePacket(data, length);
+        if (rc != 0) {
+            LOG(LoggerVerbosity::ERR, "Failed to make packet from headers. rc=" + std::to_string(rc));
+            return rc;
+		}
+        LOG(LoggerVerbosity::INFO, "Sending Packet2: data.size=" + std::to_string(data.size()));
+        
+        boost::system::error_code ec;
+        int option = 0;
+        socklen_t option_len = sizeof(option);
+#ifdef _WIN32
+        // On Windows, use SOL_SOCKET and SO_ERROR with getsockopt
+        ::getsockopt(socket.native_handle(), SOL_SOCKET, SO_ERROR, reinterpret_cast<char*>(&option), &option_len);
+#else
+        ::getsockopt(socket.native_handle(), SOL_SOCKET, SO_ERROR, &option, &option_len);
+#endif
+
+        if (!ec && option == 0) {
+            // No socket errors detected by the OS layer
+        }
+        else {
+            // Socket has a pending error or failed to query
+			LOG(LoggerVerbosity::ERR, "Socket error detected: " + ec.message() + " option="+std::to_string(option));
+            return -2;
+        }
+        if (socket.is_open()) {
+            LOG(LoggerVerbosity::INFO, "Socket is open. Ready to send packet.");
+        }
+        else {
+            LOG(LoggerVerbosity::ERR, "Socket is not open. Cannot send packet.");
+            return -1;
+        }
+        try {
+            size_t bytes_sent = socket.send_to(boost::asio::buffer(data.data(), length), receiver_endpoint);
+            LOG(LoggerVerbosity::INFO, "Sent packet: bytes_sent=" + std::to_string(bytes_sent) +
+				" total_length=" + std::to_string(length));
+        } catch (std::exception& e) {
+            LOG(LoggerVerbosity::ERR, "Exception in SendPacket: " + std::string(e.what()));
+            return -100;
+		}
+
         return 0;
     }
 

@@ -493,5 +493,32 @@ public:
 		length += hdr->Size();
 	}
 
+	int MakePacket(std::vector<uint8_t>& packet, std::size_t& length) {
+		for (auto it = headers.rbegin(); it < headers.rend(); ++it) {
+			auto hdr_data = (*it)->serialize();
+			length += (*it)->Size();
+			packet.insert(packet.begin(), hdr_data.begin(), hdr_data.end());
+		}
+		if (length != packet.size()) {
+			std::cerr << "Packet length mismatch: length=" << length
+				<< " packet.size()=" << packet.size();
+			return -1;
+		}
+		return 0;
+	}
+
+
 	void Clear() { length = 0; headers.clear(); }
+
+	std::string ToString() const {
+		std::string str = "PacketHeaders=[";
+		for (auto it = headers.begin(); it != headers.end(); ++it) {
+			str += (*it)->to_string();
+			if (std::next(it) != headers.end()) {
+				str += ", ";
+			}
+		}
+		str += "]";
+		return str;
+	}
 };

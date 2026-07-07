@@ -4,6 +4,7 @@
 #include <string>
 #include <sstream>
 #include <memory>
+#include <thread>
 #include <boost/asio.hpp>
 #include <boost/process/v1.hpp>
 #include <boost/interprocess/managed_shared_memory.hpp>
@@ -52,6 +53,25 @@ std::string show_version(bool use_cout = false) {
 
 using namespace my_logger;
 namespace fs = std::filesystem;
+
+void UdpRxThread(short udp_port, UdpStriperPortE port_mode, std::string outDir, std::shared_ptr<StripesManager> stripesMgr, StriperModeE striperMode) {
+    try {
+        boost::asio::io_context io_context;
+        UdpServer server(io_context, udp_port, port_mode, outDir, stripesMgr, striperMode);
+		LOG(LoggerVerbosity::INFO, "UDP Server running on port " + std::to_string(udp_port) + " for " + std::string(magic_enum::enum_name(port_mode)) + "...");
+   //     std::cout << "\nUDP Server running on port " << udp_port
+			//<< " for " << std::string(magic_enum::enum_name(port_mode))
+   //         << "..." << std::endl;
+        Watchdog::GetInstance().SetOnTimeoutCallback([&server]() {
+            LOG(LoggerVerbosity::CRITICAL, "Watchdog timeout callback invoked. Performing cleanup before exit.");
+            server.StopServer();
+            });
+        io_context.run();
+    }
+    catch (std::exception& e) {
+        std::cerr << "Exception: " << e.what() << std::endl;
+    }
+}
 
 
 int main(int argc, char* argv[]) {
@@ -292,12 +312,26 @@ int main(int argc, char* argv[]) {
         if (TM.force_stop.load()) {
             // Timeout must have occured durring launching of stripe processes
             LOG(LoggerVerbosity::CRITICAL, "Exiting progam as FORCE_STOP was issued");
+        }
+        else if (StriperMode == StriperModeE::RECEIVER) {
+			// Stripe Receiver mode, so start the UDP server for Data and FEC streams
+            // Create a Thread for each port
+			LOG(LoggerVerbosity::INFO, "Starting UDP Server for STRIPER_MODE_RECEIVER on ports: " + std::to_string(StriperConfig.stripeCfg.StartUdpDstPortNumber) + ", " + std::to_string(StriperConfig.stripeCfg.StartUdpDstPortNumber + 2) + ", " + std::to_string(StriperConfig.stripeCfg.StartUdpDstPortNumber + 4));   
+			short udp_port = static_cast<short>(StriperConfig.stripeCfg.StartUdpDstPortNumber);
+			UdpStriperPortE port_mode = UdpStriperPortE::STRIPER_PORT_DATA;
+            std::thread udp_rx_data(UdpRxThread, udp_port, UdpStriperPortE::STRIPER_PORT_DATA, OutDir, stripesMgr, StriperMode);
+            std::thread udp_rx_col(UdpRxThread, udp_port + 2, UdpStriperPortE::STRIPER_PORT_FEC_COL, OutDir, stripesMgr, StriperMode);
+            std::thread udp_rx_row(UdpRxThread, udp_port + 4, UdpStriperPortE::STRIPER_PORT_FEC_ROW, OutDir, stripesMgr, StriperMode);
+			LOG(LoggerVerbosity::INFO, "UDP Server threads started for STRIPER_MODE_RECEIVER, waiting for threads to join...");
+            udp_rx_data.join();
+            udp_rx_col.join();
+            udp_rx_row.join();
         } else {
-
+			// Stripe Transmitter or no striper mode, so start the UDP server
             try {
                 boost::asio::io_context io_context;
                 short port = static_cast<short>(std::stoi(ServerPort));
-                UdpServer server(io_context, port, OutDir, stripesMgr, StriperMode);
+                UdpServer server(io_context, port, UdpStriperPortE::NOTSET,OutDir, stripesMgr, StriperMode);
 
                 std::cout << "\nUDP Server running on port " << ServerPort << "..." << std::endl;
                 watchdog.SetOnTimeoutCallback([&server]() {

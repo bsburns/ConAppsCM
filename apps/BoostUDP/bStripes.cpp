@@ -167,6 +167,7 @@ struct StripeSharedData {
 class StripeProcessManager {
 public:
     std::string shm_name;
+    StriperModeE mode;
     size_t shm_size;
     std::unique_ptr<boost::interprocess::managed_shared_memory> segment;
     //StripeShmDeque* stripe_deque;
@@ -175,14 +176,18 @@ public:
     bp::v1::child stripe_process;
     StripeSharedData* shared_data;
 
-    StripeProcessManager(const char* shm_name_, size_t shm_size_)
-        : shm_name(shm_name_), shm_size(shm_size_)
+    StripeProcessManager(const char* shm_name_, size_t shm_size_, StriperModeE mode_)
+        : shm_name(shm_name_)
+        , shm_size(shm_size_)
+        , mode(mode_)
     {
+        std::string SharedDataStr = "SharedData" + std::string(magic_enum::enum_name(mode));        
         shared_memory_object::remove(shm_name.c_str());
+		LOG(LoggerVerbosity::INFO, "Creating shared memory segment: " + shm_name + " of size: " + std::to_string(shm_size) + " SharedDataStr=" + SharedDataStr);
         segment = std::make_unique<boost::interprocess::managed_shared_memory>(
             boost::interprocess::create_only, shm_name.c_str(), shm_size);
 
-        shared_data = segment->construct<StripeSharedData>("SharedData")(segment->get_segment_manager());
+        shared_data = segment->construct<StripeSharedData>(SharedDataStr.c_str())(segment->get_segment_manager());
         SendMessage("Hello");
     }
 
@@ -269,6 +274,9 @@ public:
         shared_data->mutex.unlock();
         shared_data->cond_nonempty.notify_one();
     }
+    void ReceivePacket(UdpStriperPortE port_mode, PacketHeaders& headers, std::vector<uint8_t>& data, std::size_t length) {
+		LOG(LoggerVerbosity::INFO, "ReceivePacket called for port_mode=" + std::string(magic_enum::enum_name(port_mode)) + " length=" + std::to_string(length));
+    }
 
     void SendExit() {
         // Create a message using the shared-memory byte allocator
@@ -314,6 +322,8 @@ public:
         mode = mode_;
         process_path = path_;
         process_args = args_;
+		std::string mode_str = std::string(magic_enum::enum_name(mode));
+        //std::string mode_str = (mode == StriperModeE::RECEIVER) ? "RECEIVER" : "TRANSMITTER";
 
         if (mode == StriperModeE::RECEIVER) {
             process_args += " --rx_striper";
@@ -323,13 +333,13 @@ public:
         }
 
         for (int sid = 0; sid < striperConfig->schedulerCfg.MaxNumberStripes; ++sid) {
-            std::string process_name = "Stripe-" + std::to_string(sid);
+            std::string process_name = "Stripe-" + std::to_string(sid) +"-"+mode_str;
             std::string stripe_args = process_args + " --stripe_process " + process_name + " --logfile " + process_name + ".log";
 
             LOG(LoggerVerbosity::INFO, "Starting Stripe Process: " + process_name + " at path: " + process_path + " with args: " + process_args);
 
             try {
-                StripeProcessManager spm(process_name.c_str(), 65536); // 64KB shared memory for each stripe
+                StripeProcessManager spm(process_name.c_str(), 65536, mode); // 64KB shared memory for each stripe
                 spm.startStripeProcess(process_path + stripe_args);
                 stripe_processors.emplace_back(std::move(spm));
             }
@@ -367,6 +377,30 @@ public:
         if (current_stripe >= stripe_processors.size()) current_stripe = 0;
         stripe_processors[current_stripe].SendPacket(pkt_, data_, length_);
         current_stripe++;
+    }
+
+    void ReceivePacket(UdpStriperPortE port_mode, PacketHeaders& headers, std::vector<uint8_t>& data, std::size_t length) {
+        // For now, just receive from the first stripe processor
+        if (stripe_processors.size() == 0) {
+            LOG(LoggerVerbosity::ERR, "No stripe processors instantiated!!!");
+            return;
+        }
+		// Outer UDP header is 2nd header, stripe # contained in UDP header, so we can use that to determine which stripe to receive from
+        if (headers.headers.size() < 2) {
+            LOG(LoggerVerbosity::ERR, "Packet headers do not contain enough headers to determine stripe number.");
+            return;
+		}
+        std::shared_ptr<PacketHeaderUDP> udpHdr = std::dynamic_pointer_cast<PacketHeaderUDP>(headers.headers[1]);
+		if (!udpHdr) {
+            LOG(LoggerVerbosity::ERR, "Second header is not a UDP header, cannot determine stripe number.");
+            return;
+        }
+        int stripe_num = udpHdr->srcPort;
+        if (stripe_num < 0 || stripe_num >= stripe_processors.size()) {
+            LOG(LoggerVerbosity::ERR, "Invalid stripe number derived from UDP header: " + std::to_string(stripe_num));
+            return;
+		}
+		stripe_processors[stripe_num].ReceivePacket(port_mode, headers, data, length);
     }
 
     void SendExit(int stripe_num=-1) {
@@ -412,6 +446,9 @@ void StripesManager::SendMessage(std::string msg, int stripe_num) { // stripe_nu
 void StripesManager::SendPacket(PacketHeaders& pkt, const std::vector<uint8_t>& data, std::size_t length) {
     return impl->SendPacket(pkt, data, length);
 }
+void StripesManager::ReceivePacket(UdpStriperPortE port_mode, PacketHeaders& headers, std::vector<uint8_t>& data, std::size_t length) {
+    return impl->ReceivePacket(port_mode, headers, data, length);
+}
 
 void StripesManager::SendExit(int stripe_num) { // stripe_num == -1 means all stripes
     return impl->SendExit(stripe_num);
@@ -427,10 +464,10 @@ StripeProcess::StripeProcess(std::string name_, uint16_t stripe_num_, StriperMod
     , stripe_num(stripe_num_)
     , mode(mode_)
     , striperConfig(striper_config_)
-    , fecEngine(name_, stripe_num_, mode_, striper_config_)
     , segment(boost::interprocess::managed_shared_memory(open_only, name.c_str()))
 {
-    LOG(LoggerVerbosity::INFO, "This is a Stripe Processor: " + name);
+	SharedDataStr = "SharedData" + std::string(magic_enum::enum_name(mode));
+    LOG(LoggerVerbosity::INFO, "This is a Stripe Processor: " + name + " SharedDataSegment=" + SharedDataStr);
 
     //segment = managed_shared_memory(open_only, name.c_str());
 
@@ -438,15 +475,18 @@ StripeProcess::StripeProcess(std::string name_, uint16_t stripe_num_, StriperMod
     ThreadManager& TM = ThreadManager::GetInstance();
     Watchdog& watchdog = Watchdog::GetInstance();
 
-    if (mode == StriperModeE::TRANSMITTER) {
-        // Open UDP Client for out-going FEC streams
+    // Create FEC Engine
+    fecEngine = std::make_unique<SMPTE_FEC_Engine>(name, stripe_num, mode, striperConfig);
+    if (fecEngine == nullptr) {
+        LOG(LoggerVerbosity::ERR, "FEC Engine not initialized for Stripe Process: " + name);
     }
 
     TM.StartThread("MonitorDequeue-"+name, [this, &TM, &watchdog]() {
+        LOG(LoggerVerbosity::INFO, "Starting Stripe Process Dequeue Monitor Thread: name="+ this->name);
         boost::interprocess::managed_shared_memory local_segment(open_only, this->name.c_str());
         // Find the named deque instance
         std::pair<StripeSharedData*, managed_shared_memory::handle_t> res =
-            local_segment.find<StripeSharedData>("SharedData");
+            local_segment.find<StripeSharedData>(this->SharedDataStr.c_str());
         if (res.first != nullptr) {
             StripeSharedData* my_data = res.first;
 
@@ -524,10 +564,14 @@ StripeProcess::StripeProcess(std::string name_, uint16_t stripe_num_, StriperMod
 }
 
 
-void StripeProcess::ReceivedPacket(PacketHeaders& headers, const std::vector<uint8_t>& data, std::size_t length) {
+void StripeProcess::ReceivedPacket(PacketHeaders& headers, std::vector<uint8_t>& data, std::size_t length) {
+    if (fecEngine == nullptr) {
+        LOG(LoggerVerbosity::ERR, "FEC Engine not initialized for Stripe Process: " + name);
+        return;
+	}
     if (mode == StriperModeE::TRANSMITTER) {
         // Perform SMPTE FEC on packet
-        fecEngine.PerformFEC(headers, data, length);
+        fecEngine->PerformFEC(headers, data, length);
     } else {
 
     }
@@ -587,69 +631,111 @@ SMPTE_FEC_Engine::SMPTE_FEC_Engine(std::string owning_stripe_name_, uint16_t str
 	std::string dport_data = std::to_string(striperConfig->stripeCfg.StartUdpDstPortNumber);
     std::string dport_ColFEC = std::to_string(striperConfig->stripeCfg.StartUdpDstPortNumber + 2);
     std::string dport_RowFEC = std::to_string(striperConfig->stripeCfg.StartUdpDstPortNumber + 4);
-    udpClientData = std::make_shared< UdpClient>(io_context, ServerIP, sport, dport_data, UdpSendMode::PACKET);
-    udpClientColFEC = std::make_shared< UdpClient>(io_context, ServerIP, sport, dport_ColFEC, UdpSendMode::PACKET);
-    udpClientRowFEC = std::make_shared< UdpClient>(io_context, ServerIP, sport, dport_RowFEC, UdpSendMode::PACKET);
-    if (udpClientData == nullptr) {
-        LOG(LoggerVerbosity::ERR, "Could not create UDP client for stripe data: Stripe=" + owning_stripe_name
-            + " ServerIP=" + ServerIP + " SrcPort=" + sport
-            + " DstPort=" + dport_data
+
+    LOG(LoggerVerbosity::INFO, "Initializing FEC engine: Mode="
+        + std::string(magic_enum::enum_name(striperConfig->stripeCfg.Mode))
+        + " rows=" +std::to_string(number_rows)
+        + " cols=" + std::to_string(number_columns)
+        + " block_size=" + std::to_string(block_size)
+    );
+    if (mode == StriperModeE::TRANSMITTER) {
+        udpClientData = std::make_shared< UdpClient>(io_context, ServerIP, sport, dport_data, UdpSendMode::PACKET);
+        udpClientColFEC = std::make_shared< UdpClient>(io_context, ServerIP, sport, dport_ColFEC, UdpSendMode::PACKET);
+        udpClientRowFEC = std::make_shared< UdpClient>(io_context, ServerIP, sport, dport_RowFEC, UdpSendMode::PACKET);
+        if (udpClientData == nullptr) {
+            LOG(LoggerVerbosity::ERR, "Could not create UDP client for stripe data: Stripe=" + owning_stripe_name
+                + " ServerIP=" + ServerIP + " SrcPort=" + sport
+                + " DstPort=" + dport_data
             );
-        return;
-    }
-    if (udpClientColFEC == nullptr) {
-        LOG(LoggerVerbosity::ERR, "Could not create UDP client for stripe column FEC: Stripe=" + owning_stripe_name
-            + " ServerIP=" + ServerIP + " SrcPort=" + sport
-            + " DstPort=" + dport_ColFEC
-        );
-        return;
-    }
-    if (udpClientRowFEC == nullptr) {
-        LOG(LoggerVerbosity::ERR, "Could not create UDP client for stripe row FEC: Stripe=" + owning_stripe_name
-            + " ServerIP=" + ServerIP + " SrcPort=" + sport
-            + " DstPort=" + dport_RowFEC
-        );
-        return;
-    }
-
-    // Tell UDP Server we are in Packet Mode:
-	/* Won't work until we implement a UDP Server that can receive this message and change mode
-    
-    udpClientData->SendMessage("PACKET_MODE:");
-    udpClientColFEC->SendMessage("PACKET_MODE:");
-    udpClientRowFEC->SendMessage("PACKET_MODE:");
-    */
-
-    TM.StartThread("IdleFill", [this, &watchdog, &TM, &target_packet_rate_period]() {
-        std::chrono::duration<double> duration(target_packet_rate_period);
-		std::vector<uint8_t> fill_packet(1, 0); // Fill packet of 1 byte
-		PacketHeaders fill_headers;
-        auto ipHdr = std::make_shared<PacketHeaderIPv4>();
-        ipHdr->Version = 4;
-        ipHdr->IHL = 5; // 5 * 4 = 20 bytes
-        ipHdr->TOS = 0;
-        ipHdr->totalLength = 0;
-        ipHdr->TTL = 64;
-        ipHdr->Protocol = static_cast<uint8_t>(PacketHeaderType::UDP); // UDP
-        ipHdr->srcIP = 0;
-        ipHdr->dstIP = 0; // Destination IP can be set to 0 for now, or you can set it to a specific value if needed
-        fill_headers.AddHeader(ipHdr);
-
-        while (!TM.force_stop.load()) {
-            // Idle loop to fill FEC block 
-            if (this->idle.load() && this->block_started.load()) {
-                LOG(LoggerVerbosity::DEBUG, "IdleFill: FEC block started but idle, injecting fill packets to maintain rate");
-                // Inject fill packets here
-				this->PerformFEC(fill_headers, fill_packet, fill_packet.size(), true);
-			}
-			this->idle.store(true);
-
-            std::this_thread::sleep_for(duration);
+            return;
         }
-        });
+        else {
+            LOG(LoggerVerbosity::INFO, "Created UDP client for stripe data: Stripe=" + owning_stripe_name
+                + " ServerIP=" + ServerIP + " SrcPort=" + sport
+                + " DstPort=" + dport_data
+            );
+
+            //// Send a test packet to verify UDP client is working
+            //PacketHeaders test_headers;
+            //auto ipHdr = std::make_shared<PacketHeaderIPv4>();
+            //ipHdr->Version = 4;
+            //ipHdr->IHL = 5; // 5 * 4 = 20 bytes
+            //ipHdr->TOS = 0;
+            //ipHdr->totalLength = 0;
+            //ipHdr->TTL = 64;
+            //ipHdr->Protocol = static_cast<uint8_t>(PacketHeaderType::UDP); // UDP
+            //ipHdr->srcIP = 0;
+            //ipHdr->dstIP = 0; // Destination IP can be set to 0 for now, or you can set it to a specific value if needed
+            //test_headers.AddHeader(ipHdr);
+
+            //// Create RTP Header
+            //std::shared_ptr<PacketHeaderRTP> rtp_hdr = std::make_shared<PacketHeaderRTP>();
+            //rtp_hdr->payload_type = static_cast<uint8_t>(RTP_PayloadTypeE::NOTSET);
+            //rtp_hdr->sequence_number = 0;
+            //auto now = std::chrono::system_clock::now();
+            //auto duration = now.time_since_epoch();
+            //auto millis = std::chrono::duration_cast<std::chrono::milliseconds>(duration);
+            //rtp_hdr->timestamp = millis.count(); // Set appropriate timestamp
+            //rtp_hdr->sync_src = 0; // Set appropriate sync source
+            //test_headers.AddHeader(rtp_hdr, 0); // Add RTP header at the beginning
+            //std::vector<uint8_t> test_data(10, 0xAB); // Test data of 10 bytes
+            //udpClientData->SendPacket(test_headers, test_data, test_data.size());
+        }
+        if (udpClientColFEC == nullptr) {
+            LOG(LoggerVerbosity::ERR, "Could not create UDP client for stripe column FEC: Stripe=" + owning_stripe_name
+                + " ServerIP=" + ServerIP + " SrcPort=" + sport
+                + " DstPort=" + dport_ColFEC
+            );
+            return;
+        }
+        if (udpClientRowFEC == nullptr) {
+            LOG(LoggerVerbosity::ERR, "Could not create UDP client for stripe row FEC: Stripe=" + owning_stripe_name
+                + " ServerIP=" + ServerIP + " SrcPort=" + sport
+                + " DstPort=" + dport_RowFEC
+            );
+            return;
+        }
+        // Tell UDP Server we are in Packet Mode:
+        udpClientData->StartPacketMode();
+        udpClientColFEC->StartPacketMode();
+        udpClientRowFEC->StartPacketMode();
+
+		// Create IDLE Fill thread to inject fill packets when FEC block is idle
+        TM.StartThread("IdleFill", [this, &watchdog, &TM, &target_packet_rate_period]() {
+            std::chrono::duration<double> duration(target_packet_rate_period);
+            std::vector<uint8_t> fill_packet(1, 0); // Fill packet of 1 byte
+            PacketHeaders fill_headers;
+            auto ipHdr = std::make_shared<PacketHeaderIPv4>();
+            ipHdr->Version = 4;
+            ipHdr->IHL = 5; // 5 * 4 = 20 bytes
+            ipHdr->TOS = 0;
+            ipHdr->totalLength = 0;
+            ipHdr->TTL = 64;
+            ipHdr->Protocol = static_cast<uint8_t>(PacketHeaderType::UDP); // UDP
+            ipHdr->srcIP = 0;
+            ipHdr->dstIP = 0; // Destination IP can be set to 0 for now, or you can set it to a specific value if needed
+            fill_headers.AddHeader(ipHdr);
+
+            while (!TM.force_stop.load()) {
+                // Idle loop to fill FEC block 
+                if (this->idle.load() && this->block_started.load()) {
+                    LOG(LoggerVerbosity::DEBUG, "IdleFill: FEC block started but idle, injecting fill packets to maintain rate");
+                    // Inject fill packets here
+                    this->PerformFEC(fill_headers, fill_packet, fill_packet.size(), true);
+                }
+                this->idle.store(true);
+
+                std::this_thread::sleep_for(duration);
+            }
+            });
+        LOG(LoggerVerbosity::INFO, "FEC Engine is in TRANSMITTER mode...completed creating UDP clients");
+
+    } else {
+        LOG(LoggerVerbosity::INFO, "FEC Engine is in RECEIVER mode, not creating UDP clients for FEC streams.");
+	}
 }
 
-int SMPTE_FEC_Engine::PerformFEC(PacketHeaders& headers, const std::vector<uint8_t>& data, std::size_t length, bool fill)
+int SMPTE_FEC_Engine::PerformFEC(PacketHeaders& headers, std::vector<uint8_t>& data, std::size_t length, bool fill)
 {
     // Implement SMPTE FEC algorithm here
 	block_started.store(true);
@@ -716,6 +802,17 @@ int SMPTE_FEC_Engine::PerformFEC(PacketHeaders& headers, const std::vector<uint8
     }
 
 	// Send packet to UDP Port
+    if (udpClientData == nullptr) {
+        LOG(LoggerVerbosity::ERR, "UDP Client for data is not initialized, cannot send packet");
+        return 1;
+	}
+    LOG(LoggerVerbosity::INFO, "Sending packet to UDP client for data: seq=" + std::to_string(rtp_hdr->sequence_number)
+        + " length=" + std::to_string(length)
+		+ " headers=" + headers.ToString()
+		+ " TxPktStats:" + StatsTxPackets.ToString()
+    );
+	udpClientData->SendPacket(headers, data, length);
+
 // Stopped here
 	// If we have reached the end of a FEC block, send the FEC packets
     if (send_fec_column_fec) {

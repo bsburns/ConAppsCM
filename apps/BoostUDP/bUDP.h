@@ -32,6 +32,14 @@ enum class UdpSendMode : int {
     PACKET = 3
 };
 
+enum class UdpStriperPortE : int {
+    NOTSET = 0,
+    STRIPER_PORT_DATA = 1,
+    STRIPER_PORT_FEC_ROW = 2,
+    STRIPER_PORT_FEC_COL = 3,
+};
+
+
 class FileTransferHeader {
 public:
     uint16_t chunkNumber;
@@ -63,6 +71,8 @@ public:
 class udp_connection {
 public:
     UdpSendMode mode = UdpSendMode::NOTSET;
+    uint16_t srcPort = 0;
+    uint32_t srcIP = 0;
     std::map<uint16_t, std::vector<uint8_t>> file_chunks; // For storing file chunks if in SEND_FILE mode
     std::string file_name; // Store the file name being sent by the client
     std::chrono::system_clock::time_point connection_time; // Track when the connection was established
