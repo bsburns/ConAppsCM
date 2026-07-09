@@ -18,6 +18,10 @@
 #include <iomanip> // For std::setw and std::setfill
 
 #include "utility.h"
+#include "logger.h"
+
+using namespace my_logger;
+
 enum class PacketHeaderType : uint8_t {
     // Define your packet header types here
 	NOTSET = 0,
@@ -367,6 +371,9 @@ public:
 
 	std::string to_string() const override {
 		std::string str = "RTP={";
+		str += "Seq=" + std::to_string(sequence_number);
+		str += ", TS=" + std::to_string(timestamp);
+		str += ", PT=" + std::to_string(payload_type);
 		str += "}";
 		return str;
 	}
@@ -486,8 +493,10 @@ public:
 			if (position > 0 && position < headers.size()) {
 				headers.insert(headers.begin() + position, hdr);
 			} else {
-				std::cerr << "Header Insertion location out of range: loc="
-					<< position << " MaxPosition=" << headers.size() - 1;
+				LOG(LoggerVerbosity::ERR, "Header Insertion location out of range: loc="
+					+ std::to_string(position)
+					+ " MaxPosition=" + std::to_string(headers.size() - 1)
+				);
 			}
 		}
 		length += hdr->Size();
@@ -500,10 +509,13 @@ public:
 			packet.insert(packet.begin(), hdr_data.begin(), hdr_data.end());
 		}
 		if (length != packet.size()) {
-			std::cerr << "Packet length mismatch: length=" << length
-				<< " packet.size()=" << packet.size();
+			LOG(LoggerVerbosity::ERR, "Packet length mismatch: length="
+				+ std::to_string(length)
+				+ " packet.size()=" + std::to_string(packet.size())
+			);
 			return -1;
 		}
+		headers.clear(); // Since headers have been added to packet, delete them
 		return 0;
 	}
 

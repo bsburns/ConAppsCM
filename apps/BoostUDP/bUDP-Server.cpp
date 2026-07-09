@@ -287,6 +287,13 @@ int main(int argc, char* argv[]) {
 
         LOG(LoggerVerbosity::INFO, "Creating Stripe Process: name=" + StripeProcessName + " stripe_num=" + std::to_string(stripe_num));
         StripeProc = new StripeProcess(StripeProcessName, stripe_num, StriperMode, &StriperConfig);
+
+        // Spin waiting for forced stop
+        std::chrono::duration<double> duration(1.0);
+        while (!TM.force_stop.load()) {
+            std::this_thread::sleep_for(duration);
+        }
+        LOG(LoggerVerbosity::CRITICAL, "Stripe Process exiting...");
     }
     else {
         // Main UDP Server
@@ -349,8 +356,11 @@ int main(int argc, char* argv[]) {
 
     // Wait for threads to join
     LOG(LoggerVerbosity::INFO, "Waiting threads to join...");
-    stripesMgr->SendExit();
-    stripesMgr->WaitForComplete();
+    if (StripeProcessName.empty()) {
+        // Not a Stripe Process, must be root process, so wait for children to complete
+        stripesMgr->SendExit();
+        stripesMgr->WaitForComplete();
+    }
     watchdog.StopMonitoring(); 
     TM.WaitAllThreads(); // Wait for all threads to finish
     return 0;

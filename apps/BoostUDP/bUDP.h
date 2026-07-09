@@ -17,6 +17,7 @@
 #include <chrono>
 
 #include <boost/asio.hpp>
+#include "logger.h"
 
 
 using boost::asio::ip::udp;

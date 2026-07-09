@@ -68,6 +68,7 @@ public:
         try {
             //udp::endpoint local_ep(udp::v4(), sourcePort);
             socket.bind(boost::asio::ip::udp::endpoint(boost::asio::ip::udp::v4(), sourcePort));
+            LOG(LoggerVerbosity::INFO, "UDPC: Binded to source port=" + std::to_string(sourcePort));
         }
         catch (std::exception& e) {
             std::cerr << "\nException: UdpClient: bind local endpoint: " << e.what() << std::endl;
@@ -146,37 +147,13 @@ public:
     }
     
     int SendPacket(PacketHeaders& headers, std::vector<uint8_t>& data, std::size_t length) {
-        LOG(LoggerVerbosity::INFO, "Sending Packet: len=" + std::to_string(length)
-            + " hdr_length=" + std::to_string(headers.length));
 		auto rc = headers.MakePacket(data, length);
         if (rc != 0) {
             LOG(LoggerVerbosity::ERR, "Failed to make packet from headers. rc=" + std::to_string(rc));
             return rc;
 		}
-        LOG(LoggerVerbosity::INFO, "Sending Packet2: data.size=" + std::to_string(data.size()));
-        
-        boost::system::error_code ec;
-        int option = 0;
-        socklen_t option_len = sizeof(option);
-#ifdef _WIN32
-        // On Windows, use SOL_SOCKET and SO_ERROR with getsockopt
-        ::getsockopt(socket.native_handle(), SOL_SOCKET, SO_ERROR, reinterpret_cast<char*>(&option), &option_len);
-#else
-        ::getsockopt(socket.native_handle(), SOL_SOCKET, SO_ERROR, &option, &option_len);
-#endif
-
-        if (!ec && option == 0) {
-            // No socket errors detected by the OS layer
-        }
-        else {
-            // Socket has a pending error or failed to query
-			LOG(LoggerVerbosity::ERR, "Socket error detected: " + ec.message() + " option="+std::to_string(option));
-            return -2;
-        }
-        if (socket.is_open()) {
-            LOG(LoggerVerbosity::INFO, "Socket is open. Ready to send packet.");
-        }
-        else {
+       
+        if (!socket.is_open()) {
             LOG(LoggerVerbosity::ERR, "Socket is not open. Cannot send packet.");
             return -1;
         }

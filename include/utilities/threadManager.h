@@ -52,6 +52,7 @@ public:
 	}
 
 	void StopAllThreads() {
+		LOG(my_logger::LoggerVerbosity::CRITICAL, "Setting Force Stop to TRUE");
 		force_stop.store(true);
 	}
 

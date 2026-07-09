@@ -13,7 +13,7 @@ find_package(Boost REQUIRED COMPONENTS filesystem)
 # Include Boost headers
 #include_directories("C:\\local\\boost_1_91_0\\boost")
 
-add_executable(bUDPS bUDP-Server.cpp bStripes.cpp)
+add_executable(bUDPS bUDP-Server.cpp bStripes.cpp "FecEngine.h" "common.h" "FecEngine.cpp")
 
 target_include_directories(bUDPS
     PUBLIC
@@ -25,7 +25,7 @@ target_include_directories(bUDPS
 target_link_libraries(bUDPS PRIVATE Boost::headers Boost::filesystem cli_lib Threads::Threads)
 
 
-add_executable(bUDPC bUDP-Client.cpp)
+add_executable(bUDPC bUDP-Client.cpp "FecEngine.h" "common.h" "FecEngine.cpp")
 
 target_include_directories(bUDPC
     PUBLIC

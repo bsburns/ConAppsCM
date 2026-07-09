@@ -1,4 +1,3 @@
-#pragma once
 /*------------------------------------------------------------------
  * bStripes.cpp
  *
@@ -275,7 +274,9 @@ public:
         shared_data->cond_nonempty.notify_one();
     }
     void ReceivePacket(UdpStriperPortE port_mode, PacketHeaders& headers, std::vector<uint8_t>& data, std::size_t length) {
-		LOG(LoggerVerbosity::INFO, "ReceivePacket called for port_mode=" + std::string(magic_enum::enum_name(port_mode)) + " length=" + std::to_string(length));
+		LOG(LoggerVerbosity::INFO, "SPM:ReceivePacket called for shm_name=" + shm_name
+            + " port_mode=" + std::string(magic_enum::enum_name(port_mode)) 
+            + " length=" + std::to_string(length));
     }
 
     void SendExit() {
@@ -395,12 +396,42 @@ public:
             LOG(LoggerVerbosity::ERR, "Second header is not a UDP header, cannot determine stripe number.");
             return;
         }
-        int stripe_num = udpHdr->srcPort;
+        int stripe_num = (udpHdr->srcPort - striperConfig->stripeCfg.StartUdpSrcPortNumber) >> 3;
         if (stripe_num < 0 || stripe_num >= stripe_processors.size()) {
-            LOG(LoggerVerbosity::ERR, "Invalid stripe number derived from UDP header: " + std::to_string(stripe_num));
+            LOG(LoggerVerbosity::ERR, "Invalid stripe number derived from UDP header: stripe_num=" 
+                + std::to_string(stripe_num)
+				+ " srcPort=" + std::to_string(udpHdr->srcPort)
+            );
             return;
 		}
-		stripe_processors[stripe_num].ReceivePacket(port_mode, headers, data, length);
+        // Check Dest port
+        uint16_t pm = udpHdr->dstPort - striperConfig->stripeCfg.StartUdpDstPortNumber;
+        if (pm == 0 && port_mode != UdpStriperPortE::STRIPER_PORT_DATA) {
+            LOG(LoggerVerbosity::ERR, "Mistmatch between Destination Port and port_mode: Destination Port=" + std::to_string(udpHdr->dstPort)
+                + " pm=" + std::to_string(pm)
+                + " port_mode=" + std::string(magic_enum::enum_name(port_mode))
+                );
+            return;
+        } else if (pm == 2 && port_mode != UdpStriperPortE::STRIPER_PORT_FEC_COL) {
+            LOG(LoggerVerbosity::ERR, "Mistmatch between Destination Port and port_mode: Destination Port=" + std::to_string(udpHdr->dstPort)
+                + " pm=" + std::to_string(pm)
+                + " port_mode=" + std::string(magic_enum::enum_name(port_mode))
+            );
+            return;
+        } else if (pm == 4 && port_mode != UdpStriperPortE::STRIPER_PORT_FEC_ROW) {
+            LOG(LoggerVerbosity::ERR, "Mistmatch between Destination Port and port_mode: Destination Port=" + std::to_string(udpHdr->dstPort)
+                + " pm=" + std::to_string(pm)
+                + " port_mode=" + std::string(magic_enum::enum_name(port_mode))
+            );
+            return;
+        } else if (pm != 0 && pm != 2 && pm != 4) {
+            LOG(LoggerVerbosity::ERR, "Invalid PM: Destination Port=" + std::to_string(udpHdr->dstPort)
+                + " pm=" + std::to_string(pm)
+                + " port_mode=" + std::string(magic_enum::enum_name(port_mode))
+            );
+            return;
+        }
+        stripe_processors[stripe_num].ReceivePacket(port_mode, headers, data, length);
     }
 
     void SendExit(int stripe_num=-1) {
@@ -546,6 +577,7 @@ StripeProcess::StripeProcess(std::string name_, uint16_t stripe_num_, StriperMod
                         break;
                     case DeqMsgType::EXIT_PROCESS:
                         exit_loop = true;
+                        TM.StopAllThreads();
                         LOG(LoggerVerbosity::CRITICAL, "[" + name + "]: Received Exit command");
                         break;
                     }
@@ -560,6 +592,7 @@ StripeProcess::StripeProcess(std::string name_, uint16_t stripe_num_, StriperMod
         else {
             LOG(LoggerVerbosity::ERR, "Deque object not found in shared memory for Stripe Process: " + name);
         }
+		LOG(LoggerVerbosity::CRITICAL, "Exiting Stripe Process Dequeue Monitor Thread: name=" + this->name);
         });
 }
 
@@ -575,259 +608,4 @@ void StripeProcess::ReceivedPacket(PacketHeaders& headers, std::vector<uint8_t>&
     } else {
 
     }
-}
-
-// FEC Engine Methods
-SMPTE_FEC_Engine::SMPTE_FEC_Engine(std::string owning_stripe_name_, uint16_t stripe_num_, StriperModeE mode_, AllStriperConfig* striper_config_)
-    : owning_stripe_name(owning_stripe_name_)
-    , stripe_num(stripe_num_)
-    , mode(mode_)
-    , striperConfig(striper_config_)
-	, StatsRxPackets(owning_stripe_name +":FEC_Engine_RxPkts", nullptr)
-    , StatsTxPackets(owning_stripe_name + ":FEC_Engine_TxPkts", nullptr)
-    , StatsFillPackets(owning_stripe_name + ":FEC_Engine_FillPkts", nullptr)
-    , StatsFecColPackets(owning_stripe_name + ":FEC_Engine_FecColPkts", nullptr)
-    , StatsFecRowPackets(owning_stripe_name + ":FEC_Engine_FecRowPkts", nullptr)
-{
-    ThreadManager& TM = ThreadManager::GetInstance();
-    Watchdog& watchdog = Watchdog::GetInstance();
-
-	// Initialize configuration parameters for FEC based on striperConfig
-    number_columns = striperConfig->stripeCfg.Parm_L_cols;
-    number_rows = striperConfig->stripeCfg.Parm_D_rows;
-    switch (striperConfig->stripeCfg.Mode) {
-        case FEC_Mode::NONE:
-            base_payload_type = RTP_PayloadTypeE::NO_FEC;
-            break;
-        case FEC_Mode::OptionA: // Column only FEC
-            base_payload_type = RTP_PayloadTypeE::MODE_A_FEC;
-			number_rows += 1; // Add one row for FEC
-            break;
-		case FEC_Mode::OptionB: // Row and Column FEC
-            base_payload_type = RTP_PayloadTypeE::MODE_B_FEC;
-			number_rows += 1; // Add one row for FEC
-			number_columns += 1; // Add one column for FEC
-            break;
-        default:
-            LOG(LoggerVerbosity::ERR, "Unknown FEC Mode in configuration");
-            base_payload_type = RTP_PayloadTypeE::NOTSET;
-            break;
-	}
-	block_size = number_rows * number_columns;
-	dport_data = striperConfig->stripeCfg.StartUdpDstPortNumber;
-	dport_col_fec = dport_data + 2;
-	dport_row_fec = dport_data + 4;
-	double target_packet_rate_period = 1.0 / striperConfig->stripeCfg.MinPacketRate_pps;
-
-	current_column_fec_packets.resize(number_columns);
-
-	// Open UDP Clients for out-going FEC streams
-    // DPORT= N>5000(even), Col FEC=N+2 Row FEC=N+4
-    boost::asio::io_context io_context;
-    std::string ServerIP = "127.0.0.1";
-    if (!striperConfig->stripeCfg.StripeReceiverIpAddress.empty()) ServerIP = striperConfig->stripeCfg.StripeReceiverIpAddress;
-    
-	std::string sport = std::to_string(stripe_num);
-	std::string dport_data = std::to_string(striperConfig->stripeCfg.StartUdpDstPortNumber);
-    std::string dport_ColFEC = std::to_string(striperConfig->stripeCfg.StartUdpDstPortNumber + 2);
-    std::string dport_RowFEC = std::to_string(striperConfig->stripeCfg.StartUdpDstPortNumber + 4);
-
-    LOG(LoggerVerbosity::INFO, "Initializing FEC engine: Mode="
-        + std::string(magic_enum::enum_name(striperConfig->stripeCfg.Mode))
-        + " rows=" +std::to_string(number_rows)
-        + " cols=" + std::to_string(number_columns)
-        + " block_size=" + std::to_string(block_size)
-    );
-    if (mode == StriperModeE::TRANSMITTER) {
-        udpClientData = std::make_shared< UdpClient>(io_context, ServerIP, sport, dport_data, UdpSendMode::PACKET);
-        udpClientColFEC = std::make_shared< UdpClient>(io_context, ServerIP, sport, dport_ColFEC, UdpSendMode::PACKET);
-        udpClientRowFEC = std::make_shared< UdpClient>(io_context, ServerIP, sport, dport_RowFEC, UdpSendMode::PACKET);
-        if (udpClientData == nullptr) {
-            LOG(LoggerVerbosity::ERR, "Could not create UDP client for stripe data: Stripe=" + owning_stripe_name
-                + " ServerIP=" + ServerIP + " SrcPort=" + sport
-                + " DstPort=" + dport_data
-            );
-            return;
-        }
-        else {
-            LOG(LoggerVerbosity::INFO, "Created UDP client for stripe data: Stripe=" + owning_stripe_name
-                + " ServerIP=" + ServerIP + " SrcPort=" + sport
-                + " DstPort=" + dport_data
-            );
-
-            //// Send a test packet to verify UDP client is working
-            //PacketHeaders test_headers;
-            //auto ipHdr = std::make_shared<PacketHeaderIPv4>();
-            //ipHdr->Version = 4;
-            //ipHdr->IHL = 5; // 5 * 4 = 20 bytes
-            //ipHdr->TOS = 0;
-            //ipHdr->totalLength = 0;
-            //ipHdr->TTL = 64;
-            //ipHdr->Protocol = static_cast<uint8_t>(PacketHeaderType::UDP); // UDP
-            //ipHdr->srcIP = 0;
-            //ipHdr->dstIP = 0; // Destination IP can be set to 0 for now, or you can set it to a specific value if needed
-            //test_headers.AddHeader(ipHdr);
-
-            //// Create RTP Header
-            //std::shared_ptr<PacketHeaderRTP> rtp_hdr = std::make_shared<PacketHeaderRTP>();
-            //rtp_hdr->payload_type = static_cast<uint8_t>(RTP_PayloadTypeE::NOTSET);
-            //rtp_hdr->sequence_number = 0;
-            //auto now = std::chrono::system_clock::now();
-            //auto duration = now.time_since_epoch();
-            //auto millis = std::chrono::duration_cast<std::chrono::milliseconds>(duration);
-            //rtp_hdr->timestamp = millis.count(); // Set appropriate timestamp
-            //rtp_hdr->sync_src = 0; // Set appropriate sync source
-            //test_headers.AddHeader(rtp_hdr, 0); // Add RTP header at the beginning
-            //std::vector<uint8_t> test_data(10, 0xAB); // Test data of 10 bytes
-            //udpClientData->SendPacket(test_headers, test_data, test_data.size());
-        }
-        if (udpClientColFEC == nullptr) {
-            LOG(LoggerVerbosity::ERR, "Could not create UDP client for stripe column FEC: Stripe=" + owning_stripe_name
-                + " ServerIP=" + ServerIP + " SrcPort=" + sport
-                + " DstPort=" + dport_ColFEC
-            );
-            return;
-        }
-        if (udpClientRowFEC == nullptr) {
-            LOG(LoggerVerbosity::ERR, "Could not create UDP client for stripe row FEC: Stripe=" + owning_stripe_name
-                + " ServerIP=" + ServerIP + " SrcPort=" + sport
-                + " DstPort=" + dport_RowFEC
-            );
-            return;
-        }
-        // Tell UDP Server we are in Packet Mode:
-        udpClientData->StartPacketMode();
-        udpClientColFEC->StartPacketMode();
-        udpClientRowFEC->StartPacketMode();
-
-		// Create IDLE Fill thread to inject fill packets when FEC block is idle
-        TM.StartThread("IdleFill", [this, &watchdog, &TM, &target_packet_rate_period]() {
-            std::chrono::duration<double> duration(target_packet_rate_period);
-            std::vector<uint8_t> fill_packet(1, 0); // Fill packet of 1 byte
-            PacketHeaders fill_headers;
-            auto ipHdr = std::make_shared<PacketHeaderIPv4>();
-            ipHdr->Version = 4;
-            ipHdr->IHL = 5; // 5 * 4 = 20 bytes
-            ipHdr->TOS = 0;
-            ipHdr->totalLength = 0;
-            ipHdr->TTL = 64;
-            ipHdr->Protocol = static_cast<uint8_t>(PacketHeaderType::UDP); // UDP
-            ipHdr->srcIP = 0;
-            ipHdr->dstIP = 0; // Destination IP can be set to 0 for now, or you can set it to a specific value if needed
-            fill_headers.AddHeader(ipHdr);
-
-            while (!TM.force_stop.load()) {
-                // Idle loop to fill FEC block 
-                if (this->idle.load() && this->block_started.load()) {
-                    LOG(LoggerVerbosity::DEBUG, "IdleFill: FEC block started but idle, injecting fill packets to maintain rate");
-                    // Inject fill packets here
-                    this->PerformFEC(fill_headers, fill_packet, fill_packet.size(), true);
-                }
-                this->idle.store(true);
-
-                std::this_thread::sleep_for(duration);
-            }
-            });
-        LOG(LoggerVerbosity::INFO, "FEC Engine is in TRANSMITTER mode...completed creating UDP clients");
-
-    } else {
-        LOG(LoggerVerbosity::INFO, "FEC Engine is in RECEIVER mode, not creating UDP clients for FEC streams.");
-	}
-}
-
-int SMPTE_FEC_Engine::PerformFEC(PacketHeaders& headers, std::vector<uint8_t>& data, std::size_t length, bool fill)
-{
-    // Implement SMPTE FEC algorithm here
-	block_started.store(true);
-	idle.store(false);
-	bool send_fec_column_fec = false;
-	bool send_fec_row_fec = false;
-
-    StatsRxPackets.addValue(length);
-
-    auto hdr = headers.headers.back();
-	auto ip_hdr = std::dynamic_pointer_cast<PacketHeaderIPv4>(hdr);
-    if (!ip_hdr) {
-        LOG(LoggerVerbosity::ERR, "First header is not IPv4, cannot perform FEC: type="
-            + std::string(magic_enum::enum_name(hdr->header_type)));
-        return -1;
-	}
-
-    // Create RTP Header
-	std::shared_ptr<PacketHeaderRTP> rtp_hdr = std::make_shared<PacketHeaderRTP>();
-    rtp_hdr->payload_type = static_cast<uint8_t>(base_payload_type);
-    rtp_hdr->sequence_number = this->sequence_number.fetch_add(1, std::memory_order_relaxed); // atomic increment
-    auto now = std::chrono::system_clock::now();
-    auto duration = now.time_since_epoch();
-    auto millis = std::chrono::duration_cast<std::chrono::milliseconds>(duration);
-
-    rtp_hdr->timestamp = millis.count(); // Set appropriate timestamp
-    rtp_hdr->sync_src = ip_hdr->srcIP; // Set appropriate sync source
-	headers.AddHeader(rtp_hdr, 0); // Add RTP header at the beginning
-    LOG(LoggerVerbosity::INFO, "Performing FEC on packet with length: " + std::to_string(length)
-    + " RTP_SEQ=" + std::to_string(rtp_hdr->sequence_number)
-    + " RxPktStats:" + StatsRxPackets.ToString());
-
-    switch (base_payload_type) {
-    case RTP_PayloadTypeE::NO_FEC:
-        break;
-    case RTP_PayloadTypeE::MODE_A_FEC: // Column FEC
-    {
-        auto cell_index = rtp_hdr->sequence_number % block_size;
-        auto row = cell_index / number_columns;
-        auto column = cell_index % number_columns;
-        if (row == number_rows - 2 && column == number_columns - 1) {
-            LOG(LoggerVerbosity::INFO, "MODE_A: reached FEC ROW: row="
-                + std::to_string(row)
-                + " col=" + std::to_string(column));
-            send_fec_column_fec = true;
-            block_started.store(false);
-        }
-        if (cell_index == 0) {
-            LOG(LoggerVerbosity::INFO, "Starting new FEC block: seq=" + std::to_string(rtp_hdr->sequence_number)
-                + " row=" + std::to_string(row) + " column=" + std::to_string(column));
-            for (auto& fec_pkt : current_column_fec_packets) {
-                fec_pkt.Clear();
-            }
-        }
-        current_column_fec_packets[column].AddPacket(rtp_hdr, data, length);
-    }
-        break;
-    case RTP_PayloadTypeE::MODE_B_FEC: // Row and Column FEC
-        break;
-    default:
-        LOG(LoggerVerbosity::ERR, "Base Payload type not valid!! type="
-            + std::string(magic_enum::enum_name(base_payload_type)));
-        return 1;
-    }
-
-	// Send packet to UDP Port
-    if (udpClientData == nullptr) {
-        LOG(LoggerVerbosity::ERR, "UDP Client for data is not initialized, cannot send packet");
-        return 1;
-	}
-    LOG(LoggerVerbosity::INFO, "Sending packet to UDP client for data: seq=" + std::to_string(rtp_hdr->sequence_number)
-        + " length=" + std::to_string(length)
-		+ " headers=" + headers.ToString()
-		+ " TxPktStats:" + StatsTxPackets.ToString()
-    );
-	udpClientData->SendPacket(headers, data, length);
-
-// Stopped here
-	// If we have reached the end of a FEC block, send the FEC packets
-    if (send_fec_column_fec) {
-        LOG(LoggerVerbosity::INFO, "Sending Column FEC packets for block ending at seq="
-            + std::to_string(rtp_hdr->sequence_number));
-        for (size_t col = 0; col < current_column_fec_packets.size(); ++col) {
-            auto& fec_pkt = current_column_fec_packets[col];
-            if (fec_pkt.payload.size() > 0) {
-                // Send fec_pkt to UDP Port for column FEC
-                StatsFecColPackets.addValue(fec_pkt.payload.size());
-                LOG(LoggerVerbosity::INFO, "Sent Column FEC packet for column " + std::to_string(col)
-                    + " size=" + std::to_string(fec_pkt.payload.size())
-                    + " FecColStats:" + StatsFecColPackets.ToString());
-            }
-        }
-	}
-	return 0; // Return 0 for success
 }

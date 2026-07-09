@@ -5,14 +5,16 @@
         "Mode": "DYNAMIC_STRIPES",
         "RevaluationInterval_ns": 100
     },
-    "stripeCfg": {
-        "AbsMaxPacketRate_pps": 0.0,
-        "MinPacketRate_pps": 0.0,
-        "Mode": "NONE",
-        "Parm_D_rows": 100,
-        "Parm_L_cols": 5,
-        "StartUdpDstPortNumber": 5000,
-        "StartUdpSrcPortNumber": 100,
-        "StripeReceiverIpAddress": ""
-    }
+  "stripeCfg": {
+    "AbsMaxPacketRate_pps": 0.0,
+    "MinPacketRate_pps": 0.0,
+    "Mode": "OptionA",
+    "Parm_D_rows": 5,
+    "Parm_L_cols": 5,
+    "StartUdpDstPortNumber": 5000,
+    "StartUdpSrcPortNumber": 6000,
+    "StripeReceiverIpAddress": "",
+    "DeStripeIpAddress": "",
+    "DeStripeDstPortNumber": 7000
+  }
 }

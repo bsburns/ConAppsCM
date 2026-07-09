@@ -43,8 +43,10 @@ struct StripeConfig {
     double AbsMaxPacketRate_pps = 0;    // Absolute maximum packet Rate that a stripe can generate
 	double MinPacketRate_pps = 0;       // Once actual Rate drops below this amount inject fill packets to maintain this rate
     std::string StripeReceiverIpAddress = ""; // IP Address that stripe data will be sent to
-    int StartUdpSrcPortNumber = 100;    // Starting UDP Source Port number for first Stripe (Stripe number == Source Port - this value)
+    int StartUdpSrcPortNumber = 6'000;  // Starting UDP Source Port number for first Stripe (Stripe number == Source Port - this value)
     int StartUdpDstPortNumber =5'000;   // DPORT= N>5000(even), Col FEC=N+2 Row FEC=N+4
+    std::string DeStripeIpAddress = ""; // IP Address that stripe data will be sent to after destriping
+    int DeStripeDstPortNumber = 7'000;  // After Destriping, the packet will be sent to UDP Destination Port
 };
 NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(StripeConfig,
     Mode,
@@ -54,7 +56,9 @@ NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(StripeConfig,
     MinPacketRate_pps,
     StripeReceiverIpAddress,
     StartUdpSrcPortNumber,
-    StartUdpDstPortNumber
+    StartUdpDstPortNumber,
+    DeStripeIpAddress,
+    DeStripeDstPortNumber
     )
 
 struct SchedulerConfig {

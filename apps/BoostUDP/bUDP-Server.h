@@ -81,6 +81,29 @@ private:
             });
     }
     
+    void decodeRemoteString(std::string remote_str, uint32_t& srcIP, uint16_t& srcPort) {
+        auto pos = remote_str.find(":", 0);
+        if (pos != std::string::npos) {
+            srcIP = inet_addr(remote_str.substr(0, pos).c_str());
+            try {
+                unsigned long parsed = std::stoul(remote_str.substr(pos + 1));
+
+                if (parsed > UINT16_MAX) {
+                    throw std::out_of_range("Value exceeds 16-bit unsigned range");
+                }
+
+                srcPort = static_cast<uint16_t>(parsed);
+            }
+            catch (const std::invalid_argument& e) {
+                std::cout << "Error: Not a valid number.\n";
+                srcPort = 0xFFFF;
+            }
+            catch (const std::out_of_range& e) {
+                std::cout << "Error: Out of range.\n";
+                srcPort = 0xFFFE;
+            }
+        }
+    }
 
     void process_packet(std::size_t length) {
         Watchdog& watchdog = Watchdog::GetInstance();
@@ -88,6 +111,7 @@ private:
         std::ostringstream oss;
         oss << remote_endpoint_;
         std::string remote_str = oss.str();
+        std::string remote_str_log = remote_str + ":" + std::to_string(port);
         std::string message = "";
 
         // Try to insert a new connection if not present
@@ -95,38 +119,15 @@ private:
         if (inserted) {
             KnownClientConnections[remote_endpoint_].connection_time = std::chrono::system_clock::now();
             message = std::string(reinterpret_cast<const char*>(recv_buffer_.data()), length);
-            LOG(LoggerVerbosity::INFO, "New Client Connected " 
-                + remote_str 
-                + ":" + std::to_string(port)
-            );
+            LOG(LoggerVerbosity::INFO, "New Client Connected " + remote_str_log);
+            uint16_t srcPort = 0;
+            uint32_t srcIP = 0;
+            decodeRemoteString(remote_str, srcIP, srcPort);
+            KnownClientConnections[remote_endpoint_].srcIP = srcIP;
+            KnownClientConnections[remote_endpoint_].srcPort = srcPort;
 
             auto result = message.compare(0, 10, "FILE_MODE:");
             if (result == 0) {
-                uint16_t srcPort = 0;
-                uint32_t srcIP = 0;
-                auto pos = remote_str.find(":", 0);
-                if (pos != std::string::npos) {
-                    srcIP = inet_addr(remote_str.substr(0, pos).c_str());
-                    try {
-                        unsigned long parsed = std::stoul(remote_str.substr(pos + 1));
-
-                        if (parsed > UINT16_MAX) {
-                            throw std::out_of_range("Value exceeds 16-bit unsigned range");
-                        }
-
-                        srcPort = static_cast<uint16_t>(parsed);
-                    }
-                    catch (const std::invalid_argument& e) {
-                        std::cout << "Error: Not a valid number.\n";
-                        srcPort = 0xFFFF;
-                    }
-                    catch (const std::out_of_range& e) {
-                        std::cout << "Error: Out of range.\n";
-                        srcPort = 0xFFFE;
-                    }
-                }
-				KnownClientConnections[remote_endpoint_].srcIP = srcIP;
-				KnownClientConnections[remote_endpoint_].srcPort = srcPort;
                 KnownClientConnections[remote_endpoint_].mode = UdpSendMode::SEND_FILE;
                 KnownClientConnections[remote_endpoint_].file_chunks.clear();
                 fs::path filePath(message.substr(10)); // Extract file name after "FILE_MODE:"
@@ -145,8 +146,7 @@ private:
                     KnownClientConnections[remote_endpoint_].mode = UdpSendMode::MESSAGE;
                 }
             }
-            LOG(LoggerVerbosity::INFO, remote_str 
-                + ":" + std::to_string(port)
+            LOG(LoggerVerbosity::INFO, remote_str_log 
                 + " - mode = " +
                 std::string(magic_enum::enum_name(KnownClientConnections[remote_endpoint_].mode)));
         } else {
@@ -156,7 +156,7 @@ private:
 
         if (KnownClientConnections[remote_endpoint_].mode == UdpSendMode::MESSAGE) {
             message = std::string(reinterpret_cast<const char*> (recv_buffer_.data()), length);
-            LOG(LoggerVerbosity::INFO, remote_str +
+            LOG(LoggerVerbosity::INFO, remote_str_log +
                 ":MM: Received Message: " + message);
 
             // Echo the packet back asynchronously to the sender
@@ -166,11 +166,10 @@ private:
                 [response_msg](boost::system::error_code /*ec*/, std::size_t /*bytes*/) {
                     // Shared pointer capture keeps data alive until transmission completes
                 });
-        }
-        else if (KnownClientConnections[remote_endpoint_].mode == UdpSendMode::SEND_FILE) {
+        } else if (KnownClientConnections[remote_endpoint_].mode == UdpSendMode::SEND_FILE) {
             // FILE MODE: Expecting file chunks in the format "CHUNK:<chunk_number>:<data>"
             FileTransferHeader fh = FileTransferHeader::deserialize(recv_buffer_);
-            LOG(LoggerVerbosity::INFO, remote_str +
+            LOG(LoggerVerbosity::INFO, remote_str_log +
                 ":FM: Received " + std::to_string(length) + " bytes" +
                 " chunkNumber=" + std::to_string(fh.chunkNumber) +
                 " chunkSize=" + std::to_string(fh.chunkSize)
@@ -196,7 +195,8 @@ private:
                 udpHdr->dstPort = port;
                 udpHdr->length = udpHdr->Size() + length;
                 pktHdr.AddHeader(udpHdr);
-                LOG(LoggerVerbosity::INFO, "Add UDP header: " + udpHdr->to_string());
+                LOG(LoggerVerbosity::INFO, remote_str_log + 
+                    " - FM::Striper::Transmitter - Add UDP header: " + udpHdr->to_string());
                 stripesMgr->SendPacket(pktHdr, recv_buffer_, length);
             } else if (StriperMode == StriperModeE::RECEIVER) {
 				// convert to packet format = Expect recv_buffer_ to start with RTP Header, so we need to add the original IP and UDP headers to the packet
@@ -219,7 +219,8 @@ private:
                 udpHdr->dstPort = port;
                 udpHdr->length = udpHdr->Size() + length;
                 pktHdr.AddHeader(udpHdr, -1);
-                LOG(LoggerVerbosity::INFO, "Add UDP header: " + udpHdr->to_string());
+                LOG(LoggerVerbosity::INFO, remote_str_log
+                    + " - FM::Striper::Receiver - Add UDP header: " + udpHdr->to_string());
 
 				// Get RTP Header from recv_buffer_ and add it to pktHdr
                 auto rtpHdr = std::make_shared<PacketHeaderRTP>();
@@ -237,32 +238,59 @@ private:
                 }
                 else {
                     // End of file
-                    LOG(LoggerVerbosity::INFO, remote_str +
-                        ":FM: Received EOF");
+                    LOG(LoggerVerbosity::INFO, remote_str_log 
+                        + " - FM: Received EOF");
 
                     // Write the received file chunks to disk
 
                     std::string output_file = out_dir + "/" + KnownClientConnections[remote_endpoint_].file_name;
                     std::ofstream ofs(output_file, std::ios::binary);
                     if (!ofs) {
-                        LOG(LoggerVerbosity::CRITICAL, remote_str +
-                            ":FM: Error opening output file: " + output_file);
+                        LOG(LoggerVerbosity::CRITICAL, remote_str_log 
+                            + " - FM: Error opening output file: " + output_file);
                         return;
                     }
                     for (const auto& [chunkNum, chunkData] : KnownClientConnections[remote_endpoint_].file_chunks) {
                         ofs.write(reinterpret_cast<const char*>(chunkData.data()), chunkData.size());
                     }
                     ofs.close();
-                    LOG(LoggerVerbosity::INFO, remote_str +
-                        ":FM: File saved successfully to " + output_file);
+                    LOG(LoggerVerbosity::INFO, remote_str_log 
+                        + " - FM: File saved successfully to " + output_file);
                 }
             }
         } else if (KnownClientConnections[remote_endpoint_].mode == UdpSendMode::PACKET) {
-            LOG(LoggerVerbosity::INFO, "PM: Received Packet: length=" + std::to_string(length));
+            LOG(LoggerVerbosity::INFO, remote_str_log 
+                + " - PM: Received Packet:"
+                + " striper_mode=" + std::string(magic_enum::enum_name(StriperMode))
+                + " length=" + std::to_string(length));
+            if (StriperMode == StriperModeE::RECEIVER) {
+                // convert to packet format
+                // Create IPv4 and UDP headers for the packet
+                PacketHeaders pktHdr;
+                auto ipHdr = std::make_shared<PacketHeaderIPv4>();
+                ipHdr->Version = 4;
+                ipHdr->IHL = 5; // 5 * 4 = 20 bytes
+                ipHdr->TOS = 0;
+                ipHdr->totalLength = ipHdr->Size() + PacketHeaderUDP().Size() + length;
+                ipHdr->TTL = 64;
+                ipHdr->Protocol = static_cast<uint8_t>(PacketHeaderType::UDP); // UDP
+                ipHdr->srcIP = KnownClientConnections[remote_endpoint_].srcIP;
+                ipHdr->dstIP = 0; // Destination IP can be set to 0 for now, or you can set it to a specific value if needed
+                pktHdr.AddHeader(ipHdr);
+
+                auto udpHdr = std::make_shared<PacketHeaderUDP>();
+                udpHdr->srcPort = KnownClientConnections[remote_endpoint_].srcPort;
+                udpHdr->dstPort = port;
+                udpHdr->length = udpHdr->Size() + length;
+                pktHdr.AddHeader(udpHdr, -1);
+                LOG(LoggerVerbosity::INFO, remote_str_log +
+                    " - PM::Striper::Receiver - Add UDP header: " + udpHdr->to_string());
+                stripesMgr->ReceivePacket(port_mode, pktHdr, recv_buffer_, length);
+            }
         } else {
             std::cout << "Unhandled Mode: "
                 << std::string(magic_enum::enum_name(KnownClientConnections[remote_endpoint_].mode))
-                << " for endpoint " << remote_endpoint_ << std::endl;
+                << " for endpoint " << remote_str_log << std::endl;
         }
     }
 };
