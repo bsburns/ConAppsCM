@@ -113,6 +113,7 @@ private:
         std::string remote_str = oss.str();
         std::string remote_str_log = remote_str + ":" + std::to_string(port);
         std::string message = "";
+        bool rx_first = false;
 
         // Try to insert a new connection if not present
         auto [it, inserted] = KnownClientConnections.emplace(remote_endpoint_, udp_connection{});
@@ -149,6 +150,8 @@ private:
             LOG(LoggerVerbosity::INFO, remote_str_log 
                 + " - mode = " +
                 std::string(magic_enum::enum_name(KnownClientConnections[remote_endpoint_].mode)));
+
+            rx_first = true;
         } else {
             // Known Connection
 
@@ -222,7 +225,7 @@ private:
                 LOG(LoggerVerbosity::INFO, remote_str_log
                     + " - FM::Striper::Receiver - Add UDP header: " + udpHdr->to_string());
 
-				// Get RTP Header from recv_buffer_ and add it to pktHdr
+                // Get RTP Header from recv_buffer_ and add it to pktHdr
                 auto rtpHdr = std::make_shared<PacketHeaderRTP>();
                 rtpHdr->deserialize(recv_buffer_);
                 pktHdr.AddHeader(rtpHdr, -1);
@@ -285,7 +288,11 @@ private:
                 pktHdr.AddHeader(udpHdr, -1);
                 LOG(LoggerVerbosity::INFO, remote_str_log +
                     " - PM::Striper::Receiver - Add UDP header: " + udpHdr->to_string());
-                stripesMgr->ReceivePacket(port_mode, pktHdr, recv_buffer_, length);
+                if (!rx_first) {
+                    stripesMgr->ReceivePacket(port_mode, pktHdr, recv_buffer_, length);
+                } else {
+                    stripesMgr->ReceiveFirstPacket(port_mode, pktHdr, recv_buffer_, length);
+                }
             }
         } else {
             std::cout << "Unhandled Mode: "

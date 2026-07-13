@@ -10,6 +10,7 @@
  */
 
 #include <memory> // for std::unique_ptr
+#include <chrono>
 #include <boost/asio.hpp>
 
 
@@ -105,6 +106,23 @@ public:
     void AddPacket(const std::shared_ptr<PacketHeaderRTP> rtpHdr, const PacketHeaders& headers, const std::vector<uint8_t>& data, std::size_t length, uint16_t seq_num);
 };
 
+// class FEC_RX_Block - maintains data structures for FEC for receiver
+class FEC_RX_Block {
+private:
+    SMPTE_FEC_Engine* FEC_Engine;
+    uint32_t block_num;
+    std::vector<std::vector<FEC_Packet>> matrixOfDataPkts;
+    std::vector<FEC_Packet> row_fec;
+    std::vector<FEC_Packet> col_fec;
+    std::chrono::time_point<std::chrono::system_clock> startTime;
+
+public:
+    FEC_RX_Block() {}
+    FEC_RX_Block(SMPTE_FEC_Engine* FEC_Engine_, uint32_t block_num_);
+
+    void ReceivePacket(const std::shared_ptr<PacketHeaderRTP> rtpHdr, const PacketHeaders& headers, const std::vector<uint8_t>& data, std::size_t length, uint16_t seq_num);
+};
+
 class SMPTE_FEC_Engine {
 public:
     std::string owning_stripe_name;
@@ -125,6 +143,7 @@ public:
     std::atomic<bool> block_started{ false };
     std::atomic<bool> idle{ true };
     std::unique_ptr<FEC_TX_Block> fecTxBlock = nullptr;
+    std::map<uint32_t, std::unique_ptr<FEC_RX_Block>> fecRxBlocks; // key = block number, inner vector indexed by cell#
     std::shared_ptr<UdpClient> udpClientData = nullptr;
     std::shared_ptr<UdpClient> udpClientColFEC = nullptr;
     std::shared_ptr<UdpClient> udpClientRowFEC = nullptr;
@@ -140,6 +159,7 @@ public:
     SMPTE_FEC_Engine(std::string owning_stripe_name_, uint16_t stripe_num, StriperModeE mode_, AllStriperConfig* striper_config_);
 
     int PerformFEC(PacketHeaders& headers, std::vector<uint8_t>& data, std::size_t length, bool fill = false);
+    int ReceivePacket(PacketHeaders& headers, std::vector<uint8_t>& data, std::size_t length, bool fill = false);
 };
 
 

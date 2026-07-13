@@ -1,4 +1,3 @@
-
 /*
  * FecEngine.cpp
  *
@@ -153,9 +152,9 @@ SMPTE_FEC_Engine::SMPTE_FEC_Engine(std::string owning_stripe_name_, uint16_t str
             });
         LOG(LoggerVerbosity::INFO, "FEC Engine is in TRANSMITTER mode...completed creating UDP clients");
 
-    }
-    else {
+    } else {
         LOG(LoggerVerbosity::INFO, "FEC Engine is in RECEIVER mode, not creating UDP clients for FEC streams.");
+        fecRxBlocks.clear();
     }
 }
 
@@ -222,6 +221,153 @@ int SMPTE_FEC_Engine::PerformFEC(PacketHeaders& headers, std::vector<uint8_t>& d
         + " TxPktStats:" + StatsTxPackets.ToString()
     );
     udpClientData->SendPacket(headers, data, length);
+
+    return 0; // Return 0 for success
+}
+
+int SMPTE_FEC_Engine::ReceivePacket(PacketHeaders& headers, std::vector<uint8_t>& data, std::size_t length, bool fill)
+{
+    std::size_t org_length = length;
+
+    // Get outer UDP Header - should be headers[1]
+    std::shared_ptr<PacketHeaderUDP> udpHdr = std::dynamic_pointer_cast<PacketHeaderUDP>(headers.headers[1]);
+    if (udpHdr == nullptr) {
+        LOG(LoggerVerbosity::ERR, "FEC:ReceivePacket: Could not cast UDP header: headers="
+            + headers.ToString());
+        return -1;
+    }
+    if (length != data.size()) {
+        LOG(LoggerVerbosity::ERR, "FEC:ReceivePacket: Data lengthdoes not match data.size: length="
+            + std::to_string(length)
+            + " data_size=" + std::to_string(data.size())
+        );
+        return -2;
+    }
+
+    // Get Port Mode
+    auto pmi = udpHdr->dstPort - striperConfig->stripeCfg.StartUdpDstPortNumber;
+    auto snum = pmi >> 2;
+    pmi &= 0x3;
+    UdpStriperPortE pm;
+    if (pmi == 0) {
+        pm = UdpStriperPortE::STRIPER_PORT_DATA;
+    } else if (pmi == 2) {
+        pm = UdpStriperPortE::STRIPER_PORT_FEC_COL;
+    } else if (pmi == 4) {
+        pm = UdpStriperPortE::STRIPER_PORT_FEC_ROW;
+    } else {
+        LOG(LoggerVerbosity::ERR, "Could not match UDP DST port to its mode: dstPort="
+            + std::to_string(udpHdr->dstPort)
+            + " pmi=" + std::to_string(pmi)
+        );
+        return -3;
+    }
+    if (snum != stripe_num) {
+        LOG(LoggerVerbosity::ERR, "Decoded UDP DST port does not equal stripe number!! Port="
+            + std::to_string(udpHdr->dstPort)
+            + " pmi=" + std::to_string(pmi)
+            + " pm=" + std::string(magic_enum::enum_name(pm))
+            + " computed_stripe_num=" + std::to_string(snum)
+            + " stripe_num=" + std::to_string(stripe_num)
+        );
+        return -4;
+    }
+
+    // Extract RTP Header
+    auto rtpHdr = std::make_shared<PacketHeaderRTP>();
+    if (length < rtpHdr->Size()) {
+        LOG(LoggerVerbosity::ERR, "FEC:ReceivePacket: Data length not large enough to contain RTP header: length="
+            + std::to_string(length)
+            + " data_size=" + std::to_string(data.size())
+        );
+        return -5;
+    }
+    auto des_hdr = rtpHdr->deserialize(data);
+    headers.AddHeader(std::move(des_hdr), -1); // place RTP header on headers
+
+    // Now remove RTP header from data
+    length -= rtpHdr->Size();
+    data.erase(data.begin(), data.begin() + rtpHdr->Size());
+
+    if (pm == UdpStriperPortE::STRIPER_PORT_FEC_COL || pm == UdpStriperPortE::STRIPER_PORT_FEC_ROW) {
+        // FEC Volumn or Row, Extract FEC Header
+        auto fecHdr = std::make_shared<PacketHeaderSMPTE>();
+        if (length < fecHdr->Size()) {
+            LOG(LoggerVerbosity::ERR, "FEC:ReceivePacket: Data length not large enough to contain FEC header: length="
+                + std::to_string(length)
+                + " data_size=" + std::to_string(data.size())
+            );
+            return -6;
+        }
+        auto fec_hdr = fecHdr->deserialize(data);
+        headers.AddHeader(std::move(fec_hdr), -1); // place RTP header on headers
+
+        // Now remove RTP header from data
+        length -= fecHdr->Size();
+        data.erase(data.begin(), data.begin() + fecHdr->Size());
+    }
+
+    LOG(LoggerVerbosity::INFO, "FEC:ReceivePacket: headers=" + headers.ToString());
+    switch (pm) {
+    case UdpStriperPortE::STRIPER_PORT_DATA:
+        StatsRxPackets.addValue(org_length);
+        break;
+    case UdpStriperPortE::STRIPER_PORT_FEC_ROW:
+        StatsFecRowPackets.addValue(org_length);
+        break;
+    case UdpStriperPortE::STRIPER_PORT_FEC_COL:
+        StatsFecColPackets.addValue(org_length);
+        break;
+    default:
+        LOG(LoggerVerbosity::ERR, "Invalid Port Mode="+std::string(magic_enum::enum_name(pm))
+            + " pmi=" + std::to_string(pmi)
+            + " DstPort=" + std::to_string(udpHdr->dstPort)
+        );
+        return -7;
+    }
+
+    //if (!fill) StatsRxPackets.addValue(length);
+    //else StatsFillPackets.addValue(length);
+
+    //// Create RTP Header
+    //std::shared_ptr<PacketHeaderRTP> rtp_hdr = std::make_shared<PacketHeaderRTP>();
+    //rtp_hdr->payload_type = fill ? static_cast<uint8_t>(RTP_PayloadTypeE::FILL_DATA) : static_cast<uint8_t>(base_payload_type);
+    //rtp_hdr->sequence_number = this->sequence_number.fetch_add(1, std::memory_order_relaxed); // atomic increment
+    //auto now = std::chrono::system_clock::now();
+    //auto duration = now.time_since_epoch();
+    //auto millis = std::chrono::duration_cast<std::chrono::milliseconds>(duration);
+
+    //rtp_hdr->timestamp = millis.count(); // Set appropriate timestamp
+    //rtp_hdr->sync_src = ip_hdr->srcIP; // Set appropriate sync source
+    //headers.AddHeader(rtp_hdr, 0); // Add RTP header at the beginning
+
+    //if (!fill) {
+    //    LOG(LoggerVerbosity::INFO, "Performing FEC on packet with length=" + std::to_string(length)
+    //        + " RTP_SEQ=" + std::to_string(rtp_hdr->sequence_number)
+    //        + " RxPktStats:" + StatsRxPackets.ToString()
+    //    );
+    //}
+    //else {
+    //    LOG(LoggerVerbosity::INFO, "Fill packet with length=" + std::to_string(length)
+    //        + " RTP_SEQ=" + std::to_string(rtp_hdr->sequence_number)
+    //        + " FillPktStats:" + StatsFillPackets.ToString()
+    //    );
+    //}
+    //fecTxBlock->AddPacket(rtp_hdr, headers, data, length, rtp_hdr->sequence_number);
+
+    //// Send packet to UDP Port
+    //if (udpClientData == nullptr) {
+    //    LOG(LoggerVerbosity::ERR, "UDP Client for data is not initialized, cannot send packet");
+    //    return 1;
+    //}
+
+    //StatsTxPackets.addValue(length);
+    //LOG(LoggerVerbosity::INFO, "Sending packet to UDP client for data: seq=" + std::to_string(rtp_hdr->sequence_number)
+    //    + " length=" + std::to_string(length)
+    //    + " headers=" + headers.ToString()
+    //    + " TxPktStats:" + StatsTxPackets.ToString()
+    //);
+    //udpClientData->SendPacket(headers, data, length);
 
     return 0; // Return 0 for success
 }
@@ -294,5 +440,15 @@ void FEC_TX_Block::AddPacket(const std::shared_ptr<PacketHeaderRTP> rtpHdr, cons
         }
         break;
     }
+}
 
+// FEC_RX_BLOCK
+FEC_RX_Block::FEC_RX_Block(SMPTE_FEC_Engine* FEC_Engine_, uint32_t block_num_)
+    : FEC_Engine(FEC_Engine_)
+    , block_num(block_num_)
+{
+    startTime = std::chrono::system_clock::now();
+    matrixOfDataPkts.clear();
+    row_fec.clear();
+    col_fec.clear();
 }

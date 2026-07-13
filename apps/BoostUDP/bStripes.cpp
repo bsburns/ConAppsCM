@@ -169,9 +169,6 @@ public:
     StriperModeE mode;
     size_t shm_size;
     std::unique_ptr<boost::interprocess::managed_shared_memory> segment;
-    //StripeShmDeque* stripe_deque;
-    //boost::interprocess::interprocess_condition cond_nonempty;
-    //boost::interprocess::interprocess_mutex mutex;
     bp::v1::child stripe_process;
     StripeSharedData* shared_data;
 
@@ -244,8 +241,7 @@ public:
         shared_data->cond_nonempty.notify_one();
     }
 
-
-    void SendPacket(PacketHeaders& headers_, const std::vector<uint8_t>& data_, std::size_t length_) {
+    void MovePacketToSHM(PacketHeaders& headers_, const std::vector<uint8_t>& data_, std::size_t length_) {
         allocator<uint8_t, SegmentManager> byteAlloc(segment->get_segment_manager());
         StripeShmDequeMessage msg(byteAlloc);
         msg.msg_type = DeqMsgType::PACKET;
@@ -265,7 +261,7 @@ public:
         msg.data.assign(std::make_move_iterator(data_.begin()), std::make_move_iterator(data_.begin() + length_));
         std::stringstream ss;
         ss << msg;
-        LOG(LoggerVerbosity::INFO, "Created SHM Packet:" + ss.str());
+        LOG(LoggerVerbosity::INFO, "SPM: Created SHM Packet:" + ss.str());
 
         // Place Packet on Shared Deque
         shared_data->mutex.lock();
@@ -273,12 +269,8 @@ public:
         shared_data->mutex.unlock();
         shared_data->cond_nonempty.notify_one();
     }
-    void ReceivePacket(UdpStriperPortE port_mode, PacketHeaders& headers, std::vector<uint8_t>& data, std::size_t length) {
-		LOG(LoggerVerbosity::INFO, "SPM:ReceivePacket called for shm_name=" + shm_name
-            + " port_mode=" + std::string(magic_enum::enum_name(port_mode)) 
-            + " length=" + std::to_string(length));
-    }
-
+    
+    
     void SendExit() {
         // Create a message using the shared-memory byte allocator
         allocator<uint8_t, SegmentManager> byteAlloc(segment->get_segment_manager());
@@ -337,7 +329,7 @@ public:
             std::string process_name = "Stripe-" + std::to_string(sid) +"-"+mode_str;
             std::string stripe_args = process_args + " --stripe_process " + process_name + " --logfile " + process_name + ".log";
 
-            LOG(LoggerVerbosity::INFO, "Starting Stripe Process: " + process_name + " at path: " + process_path + " with args: " + process_args);
+            LOG(LoggerVerbosity::INFO, "ISSPM: Starting Stripe Process: " + process_name + " at path: " + process_path + " with args: " + process_args);
 
             try {
                 StripeProcessManager spm(process_name.c_str(), 65536, mode); // 64KB shared memory for each stripe
@@ -345,12 +337,12 @@ public:
                 stripe_processors.emplace_back(std::move(spm));
             }
             catch (const std::exception& e) {
-                LOG(LoggerVerbosity::CRITICAL, "Failed to start Stripe Process: " + process_name + ". Error: " + e.what());
+                LOG(LoggerVerbosity::CRITICAL, "ISSPM: Failed to start Stripe Process: " + process_name + ". Error: " + e.what());
                 return 1;
             }
 
         }
-        LOG(LoggerVerbosity::INFO, "All child processes spawned and running in parallel...");
+        LOG(LoggerVerbosity::INFO, "ISSPM: All child processes spawned and running in parallel...");
         return 0;
     }
 
@@ -361,7 +353,7 @@ public:
             }
         } else {
             if (stripe_num >= stripe_processors.size()) {
-                LOG(LoggerVerbosity::ERR, "Trying to send to invalid stripe, num=" + std::to_string(stripe_num));
+                LOG(LoggerVerbosity::ERR, "ISSPM: Trying to send to invalid stripe, num=" + std::to_string(stripe_num));
                 return;
             }
             stripe_processors[stripe_num].SendMessage(msg);
@@ -372,66 +364,74 @@ public:
         // Select Stripe to send packet too
 
         if (stripe_processors.size() == 0) {
-            LOG(LoggerVerbosity::ERR, "No stripe processors instantiated!!!");
+            LOG(LoggerVerbosity::ERR, "ISSPM: No stripe processors instantiated!!!");
             return;
         }
         if (current_stripe >= stripe_processors.size()) current_stripe = 0;
-        stripe_processors[current_stripe].SendPacket(pkt_, data_, length_);
+        stripe_processors[current_stripe].MovePacketToSHM(pkt_, data_, length_);
         current_stripe++;
     }
 
+    void ReceiveFirstPacket(UdpStriperPortE port_mode, PacketHeaders& headers, std::vector<uint8_t>& data, std::size_t length) {
+        // Received the first packet in Stripe stream, I think we can ignore it for now as it should contain just PACKET:
+        auto message = std::string(reinterpret_cast<const char*>(data.data()), length);
+        LOG(LoggerVerbosity::INFO, "ISSPM: Received first Packet: " + message);
+    }
+
     void ReceivePacket(UdpStriperPortE port_mode, PacketHeaders& headers, std::vector<uint8_t>& data, std::size_t length) {
-        // For now, just receive from the first stripe processor
         if (stripe_processors.size() == 0) {
-            LOG(LoggerVerbosity::ERR, "No stripe processors instantiated!!!");
+            LOG(LoggerVerbosity::ERR, "ISSPM: No stripe processors instantiated!!!");
             return;
         }
-		// Outer UDP header is 2nd header, stripe # contained in UDP header, so we can use that to determine which stripe to receive from
+        // Outer UDP header is 2nd header, stripe # contained in UDP header, so we can use that to determine which stripe to receive from
         if (headers.headers.size() < 2) {
-            LOG(LoggerVerbosity::ERR, "Packet headers do not contain enough headers to determine stripe number.");
+            LOG(LoggerVerbosity::ERR, "ISSPM: Packet headers do not contain enough headers to determine stripe number.");
             return;
-		}
+        }
         std::shared_ptr<PacketHeaderUDP> udpHdr = std::dynamic_pointer_cast<PacketHeaderUDP>(headers.headers[1]);
-		if (!udpHdr) {
-            LOG(LoggerVerbosity::ERR, "Second header is not a UDP header, cannot determine stripe number.");
+        if (!udpHdr) {
+            LOG(LoggerVerbosity::ERR, "ISSPM: Second header is not a UDP header, cannot determine stripe number.");
             return;
         }
         int stripe_num = (udpHdr->srcPort - striperConfig->stripeCfg.StartUdpSrcPortNumber) >> 3;
         if (stripe_num < 0 || stripe_num >= stripe_processors.size()) {
-            LOG(LoggerVerbosity::ERR, "Invalid stripe number derived from UDP header: stripe_num=" 
+            LOG(LoggerVerbosity::ERR, "Invalid stripe number derived from UDP header: stripe_num="
                 + std::to_string(stripe_num)
-				+ " srcPort=" + std::to_string(udpHdr->srcPort)
+                + " srcPort=" + std::to_string(udpHdr->srcPort)
             );
             return;
-		}
+        }
         // Check Dest port
         uint16_t pm = udpHdr->dstPort - striperConfig->stripeCfg.StartUdpDstPortNumber;
         if (pm == 0 && port_mode != UdpStriperPortE::STRIPER_PORT_DATA) {
-            LOG(LoggerVerbosity::ERR, "Mistmatch between Destination Port and port_mode: Destination Port=" + std::to_string(udpHdr->dstPort)
-                + " pm=" + std::to_string(pm)
-                + " port_mode=" + std::string(magic_enum::enum_name(port_mode))
-                );
-            return;
-        } else if (pm == 2 && port_mode != UdpStriperPortE::STRIPER_PORT_FEC_COL) {
-            LOG(LoggerVerbosity::ERR, "Mistmatch between Destination Port and port_mode: Destination Port=" + std::to_string(udpHdr->dstPort)
-                + " pm=" + std::to_string(pm)
-                + " port_mode=" + std::string(magic_enum::enum_name(port_mode))
-            );
-            return;
-        } else if (pm == 4 && port_mode != UdpStriperPortE::STRIPER_PORT_FEC_ROW) {
-            LOG(LoggerVerbosity::ERR, "Mistmatch between Destination Port and port_mode: Destination Port=" + std::to_string(udpHdr->dstPort)
-                + " pm=" + std::to_string(pm)
-                + " port_mode=" + std::string(magic_enum::enum_name(port_mode))
-            );
-            return;
-        } else if (pm != 0 && pm != 2 && pm != 4) {
-            LOG(LoggerVerbosity::ERR, "Invalid PM: Destination Port=" + std::to_string(udpHdr->dstPort)
+            LOG(LoggerVerbosity::ERR, "ISSPM: Mistmatch between Destination Port and port_mode: Destination Port=" + std::to_string(udpHdr->dstPort)
                 + " pm=" + std::to_string(pm)
                 + " port_mode=" + std::string(magic_enum::enum_name(port_mode))
             );
             return;
         }
-        stripe_processors[stripe_num].ReceivePacket(port_mode, headers, data, length);
+        else if (pm == 2 && port_mode != UdpStriperPortE::STRIPER_PORT_FEC_COL) {
+            LOG(LoggerVerbosity::ERR, "ISSPM: Mistmatch between Destination Port and port_mode: Destination Port=" + std::to_string(udpHdr->dstPort)
+                + " pm=" + std::to_string(pm)
+                + " port_mode=" + std::string(magic_enum::enum_name(port_mode))
+            );
+            return;
+        }
+        else if (pm == 4 && port_mode != UdpStriperPortE::STRIPER_PORT_FEC_ROW) {
+            LOG(LoggerVerbosity::ERR, "ISSPM: Mistmatch between Destination Port and port_mode: Destination Port=" + std::to_string(udpHdr->dstPort)
+                + " pm=" + std::to_string(pm)
+                + " port_mode=" + std::string(magic_enum::enum_name(port_mode))
+            );
+            return;
+        }
+        else if (pm != 0 && pm != 2 && pm != 4) {
+            LOG(LoggerVerbosity::ERR, "ISSPM: Invalid PM: Destination Port=" + std::to_string(udpHdr->dstPort)
+                + " pm=" + std::to_string(pm)
+                + " port_mode=" + std::string(magic_enum::enum_name(port_mode))
+            );
+            return;
+        }
+        stripe_processors[stripe_num].MovePacketToSHM(headers, data, length);
     }
 
     void SendExit(int stripe_num=-1) {
@@ -442,7 +442,7 @@ public:
         }
         else {
             if (stripe_num >= stripe_processors.size()) {
-                LOG(LoggerVerbosity::ERR, "Trying to send to invalid stripe, num=" + std::to_string(stripe_num));
+                LOG(LoggerVerbosity::ERR, "ISSPM: Trying to send to invalid stripe, num=" + std::to_string(stripe_num));
                 return;
             }
             stripe_processors[stripe_num].SendExit();
@@ -469,22 +469,21 @@ StripesManager& StripesManager::operator=(StripesManager&&) noexcept = default;
 int StripesManager::Initialize(StriperModeE mode_, std::string path_, std::string args_) {
     return impl->InitializeInternal(mode_, path_, args_);
 }
-
 void StripesManager::SendMessage(std::string msg, int stripe_num) { // stripe_num == -1 means all stripes
     return impl->SendMessage(msg, stripe_num);
 }
-
 void StripesManager::SendPacket(PacketHeaders& pkt, const std::vector<uint8_t>& data, std::size_t length) {
     return impl->SendPacket(pkt, data, length);
+}
+void StripesManager::ReceiveFirstPacket(UdpStriperPortE port_mode, PacketHeaders& headers, std::vector<uint8_t>& data, std::size_t length) {
+    return impl->ReceiveFirstPacket(port_mode, headers, data, length);
 }
 void StripesManager::ReceivePacket(UdpStriperPortE port_mode, PacketHeaders& headers, std::vector<uint8_t>& data, std::size_t length) {
     return impl->ReceivePacket(port_mode, headers, data, length);
 }
-
 void StripesManager::SendExit(int stripe_num) { // stripe_num == -1 means all stripes
     return impl->SendExit(stripe_num);
 }
-
 void StripesManager::WaitForComplete() {
     return impl->WaitForCompleteInternal();
 }
@@ -498,7 +497,7 @@ StripeProcess::StripeProcess(std::string name_, uint16_t stripe_num_, StriperMod
     , segment(boost::interprocess::managed_shared_memory(open_only, name.c_str()))
 {
 	SharedDataStr = "SharedData" + std::string(magic_enum::enum_name(mode));
-    LOG(LoggerVerbosity::INFO, "This is a Stripe Processor: " + name + " SharedDataSegment=" + SharedDataStr);
+    LOG(LoggerVerbosity::INFO, "SP: This is a Stripe Processor: " + name + " SharedDataSegment=" + SharedDataStr);
 
     //segment = managed_shared_memory(open_only, name.c_str());
 
@@ -509,7 +508,7 @@ StripeProcess::StripeProcess(std::string name_, uint16_t stripe_num_, StriperMod
     // Create FEC Engine
     fecEngine = std::make_unique<SMPTE_FEC_Engine>(name, stripe_num, mode, striperConfig);
     if (fecEngine == nullptr) {
-        LOG(LoggerVerbosity::ERR, "FEC Engine not initialized for Stripe Process: " + name);
+        LOG(LoggerVerbosity::ERR, "SP:FEC Engine not initialized for Stripe Process: " + name);
     }
 
     TM.StartThread("MonitorDequeue-"+name, [this, &TM, &watchdog]() {
@@ -569,7 +568,7 @@ StripeProcess::StripeProcess(std::string name_, uint16_t stripe_num_, StriperMod
 
                         std::vector<uint8_t> vec_data(msg.data.begin(), msg.data.end());
                         if (vec_data.size() != static_cast<size_t>(msg.msg_length)) {
-                            LOG(LoggerVerbosity::ERR, "Data size does not match msg_length in shared memory: "
+                            LOG(LoggerVerbosity::ERR, "SP: Data size does not match msg_length in shared memory: "
                                 + std::to_string(vec_data.size()) + " vs " + std::to_string(msg.msg_length));
                         }
                         this->ReceivedPacket(pkt_headers, vec_data, msg.msg_length);
@@ -578,34 +577,35 @@ StripeProcess::StripeProcess(std::string name_, uint16_t stripe_num_, StriperMod
                     case DeqMsgType::EXIT_PROCESS:
                         exit_loop = true;
                         TM.StopAllThreads();
-                        LOG(LoggerVerbosity::CRITICAL, "[" + name + "]: Received Exit command");
+                        LOG(LoggerVerbosity::CRITICAL, "SP: [" + name + "]: Received Exit command");
                         break;
                     }
                     std::stringstream ss;
                     ss << msg;
-                    LOG(LoggerVerbosity::INFO, "Popped: " + ss.str());
+                    LOG(LoggerVerbosity::INFO, "SP: Popped: " + ss.str());
                     my_data->stripe_deque.pop_front();
                     watchdog.CheckIn();
                 }
             }
         }
         else {
-            LOG(LoggerVerbosity::ERR, "Deque object not found in shared memory for Stripe Process: " + name);
+            LOG(LoggerVerbosity::ERR, "SP: Deque object not found in shared memory for Stripe Process: " + name);
         }
-		LOG(LoggerVerbosity::CRITICAL, "Exiting Stripe Process Dequeue Monitor Thread: name=" + this->name);
+		LOG(LoggerVerbosity::CRITICAL, "SP: Exiting Stripe Process Dequeue Monitor Thread: name=" + this->name);
         });
 }
 
 
 void StripeProcess::ReceivedPacket(PacketHeaders& headers, std::vector<uint8_t>& data, std::size_t length) {
     if (fecEngine == nullptr) {
-        LOG(LoggerVerbosity::ERR, "FEC Engine not initialized for Stripe Process: " + name);
+        LOG(LoggerVerbosity::ERR, "SP: FEC Engine not initialized for Stripe Process: " + name);
         return;
 	}
     if (mode == StriperModeE::TRANSMITTER) {
         // Perform SMPTE FEC on packet
         fecEngine->PerformFEC(headers, data, length);
     } else {
-
+        LOG(LoggerVerbosity::INFO, "SP: Receiver Processor received a packet");
+        fecEngine->ReceivePacket(headers, data, length);
     }
 }

@@ -147,20 +147,26 @@ public:
     }
     
     int SendPacket(PacketHeaders& headers, std::vector<uint8_t>& data, std::size_t length) {
-		auto rc = headers.MakePacket(data, length);
+
+        LOG(LoggerVerbosity::INFO, "UDPC: SendPacket: " + headers.ToString()
+            + " length=" + std::to_string(length)
+        );
+        auto rc = headers.MakePacket(data, length);
         if (rc != 0) {
-            LOG(LoggerVerbosity::ERR, "Failed to make packet from headers. rc=" + std::to_string(rc));
+            LOG(LoggerVerbosity::ERR, "UDPC: Failed to make packet from headers. rc=" + std::to_string(rc));
             return rc;
 		}
        
         if (!socket.is_open()) {
-            LOG(LoggerVerbosity::ERR, "Socket is not open. Cannot send packet.");
+            LOG(LoggerVerbosity::ERR, "UDPC: Socket is not open. Cannot send packet.");
             return -1;
         }
         try {
             size_t bytes_sent = socket.send_to(boost::asio::buffer(data.data(), length), receiver_endpoint);
-            LOG(LoggerVerbosity::INFO, "Sent packet: bytes_sent=" + std::to_string(bytes_sent) +
-				" total_length=" + std::to_string(length));
+            LOG(LoggerVerbosity::INFO, "UDPC: Sent packet: bytes_sent=" + std::to_string(bytes_sent)
+				+ " total_length=" + std::to_string(length)
+                //+ " headers=" + headers.ToString()
+            );
         } catch (std::exception& e) {
             LOG(LoggerVerbosity::ERR, "Exception in SendPacket: " + std::string(e.what()));
             return -100;

@@ -41,6 +41,7 @@ public:
     void SendMessage(std::string msg, int stripe_num=-1); // stripe_num == -1 means all stripes
     void SendPacket(PacketHeaders& headers, const std::vector<uint8_t>& data, std::size_t length);
     void ReceivePacket(UdpStriperPortE port_mode, PacketHeaders& headers, std::vector<uint8_t>& data, std::size_t length);
+    void ReceiveFirstPacket(UdpStriperPortE port_mode, PacketHeaders& headers, std::vector<uint8_t>& data, std::size_t length);
     void SendExit(int stripe_num = -1); // stripe_num == -1 means all stripes
     void WaitForComplete();
 

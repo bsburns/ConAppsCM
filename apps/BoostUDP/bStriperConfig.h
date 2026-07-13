@@ -47,6 +47,8 @@ struct StripeConfig {
     int StartUdpDstPortNumber =5'000;   // DPORT= N>5000(even), Col FEC=N+2 Row FEC=N+4
     std::string DeStripeIpAddress = ""; // IP Address that stripe data will be sent to after destriping
     int DeStripeDstPortNumber = 7'000;  // After Destriping, the packet will be sent to UDP Destination Port
+    int RxMaxOutstandingsBlocks = 10;   // Number of blocks that have not completed before giving up
+    double RxBlockTimeout_sec = 1.5;    // Time to wait for block to complete in seconds
 };
 NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(StripeConfig,
     Mode,
@@ -58,7 +60,9 @@ NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(StripeConfig,
     StartUdpSrcPortNumber,
     StartUdpDstPortNumber,
     DeStripeIpAddress,
-    DeStripeDstPortNumber
+    DeStripeDstPortNumber,
+    RxMaxOutstandingsBlocks,
+    RxBlockTimeout_sec
     )
 
 struct SchedulerConfig {
