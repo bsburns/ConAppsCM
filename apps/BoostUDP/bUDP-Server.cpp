@@ -85,7 +85,7 @@ int main(int argc, char* argv[]) {
     StripeProcess* StripeProc = nullptr;
 
 	LOG_INST.verbosity = verbosity;
-    //std::cout << "Program: " << argv[0] << std::endl;
+    LOG_INST.SetTimeStamping(false);
 
     CommandLineParser CLP;
     CLP.AddCommand({

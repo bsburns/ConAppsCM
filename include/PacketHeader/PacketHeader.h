@@ -503,17 +503,27 @@ public:
 	}
 
 	int MakePacket(std::vector<uint8_t>& packet, std::size_t& length) {
-		for (auto it = headers.rbegin(); it < headers.rend(); ++it) {
-			auto hdr_data = (*it)->serialize();
-			length += (*it)->Size();
-			packet.insert(packet.begin(), hdr_data.begin(), hdr_data.end());
-		}
-		if (length != packet.size()) {
-			LOG(LoggerVerbosity::ERR, "Packet length mismatch: length="
+		size_t max_size = packet.size();
+		if (length > max_size) {
+			LOG(LoggerVerbosity::ERR, "Packet length is larger than packet!!: length="
 				+ std::to_string(length)
-				+ " packet.size()=" + std::to_string(packet.size())
+				+ " packet.size()=" + std::to_string(max_size)
 			);
 			return -1;
+		}
+		size_t hdr_length = 0;
+		for (auto it = headers.rbegin(); it < headers.rend(); ++it) {
+			auto hdr_data = (*it)->serialize();
+			hdr_length += (*it)->Size();
+			packet.insert(packet.begin(), hdr_data.begin(), hdr_data.end());
+		}
+		length += hdr_length;
+		if (length > max_size) {
+			LOG(LoggerVerbosity::ERR, "Adding headers made packet too large!!: length="
+				+ std::to_string(length)
+				+ " max=" + std::to_string(max_size)
+			);
+			return -2;
 		}
 		headers.clear(); // Since headers have been added to packet, delete them
 		return 0;

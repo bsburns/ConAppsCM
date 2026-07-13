@@ -23,7 +23,7 @@
 #include "cli/CliMenu.h"
 
 #define LOG_INST my_logger::MyLogger::GetInstance()
-#define LOG LOG_INST.Log
+#define LOG(v,m) if (v >= LOG_INST.verbosity) LOG_INST.Log(v,(m))
 
 namespace my_logger {
 enum class LoggerVerbosity : int {
@@ -54,6 +54,7 @@ enum class LoggerVerbosity : int {
 		std::mutex mtx; // Mutex to protect access to configuration data
 		std::chrono::time_point<std::chrono::system_clock> last_log_time;
 		bool console_logging_enabled = true;
+		bool timestampimg_enabled = true;
 		std::string preamble = "";
 
 		MyLogger() {
@@ -157,6 +158,7 @@ enum class LoggerVerbosity : int {
 				std::cout << "\nUnhandled argument to Console Logging: " << arg << "\n";
 			}
 		}
+		void SetTimeStamping(bool enable) { timestampimg_enabled = enable; }
 
 		void SetVerbosityStr(const std::string& arg) {
 			std::lock_guard<std::mutex> lock(mtx);
@@ -230,27 +232,29 @@ enum class LoggerVerbosity : int {
 
 		void Log(LoggerVerbosity v, std::string msg, const std::source_location location = std::source_location::current()) {
 			if (v >= verbosity) {
+				std::string td = "";
 				std::lock_guard<std::mutex> lock(mtx);
 				auto now = std::chrono::system_clock::now();
 				std::chrono::duration<float> deltaT = now - last_log_time;
 
-				std::time_t now_c = std::chrono::system_clock::to_time_t(now);
-				// Convert to local time (thread-safe version)
-				std::tm local_tm = {};
+				if (timestampimg_enabled) {
+					std::time_t now_c = std::chrono::system_clock::to_time_t(now);
+					// Convert to local time (thread-safe version)
+					std::tm local_tm = {};
 #if defined(_WIN32)
-				localtime_s(&local_tm, &now_c); // Windows secure version
+					localtime_s(&local_tm, &now_c); // Windows secure version
 #else
-				localtime_r(&now_c, &local_tm); // POSIX thread-safe version
+					localtime_r(&now_c, &local_tm); // POSIX thread-safe version
 #endif
-				//std::string td = std::format("{:%F %T}", local_tm);
-				//std::string td = util::tmToString(local_tm);
+					//std::string td = std::format("{:%F %T}", local_tm);
+					//std::string td = util::tmToString(local_tm);
 
-				std::ostringstream oss;
-				oss << std::put_time(&local_tm, "%Y-%m-%d %H:%M:%S")
-					//<< "("<< deltaT.count() << ")"
-					<< " : ";
-				std::string td = oss.str();
-
+					std::ostringstream oss;
+					oss << std::put_time(&local_tm, "%Y-%m-%d %H:%M:%S")
+						//<< "("<< deltaT.count() << ")"
+						<< " : ";
+					td = oss.str();
+				}
 
 				auto lvl = std::string(magic_enum::enum_name(v));
 				std::string short_name = std::filesystem::path(location.file_name()).filename().string();
@@ -258,7 +262,7 @@ enum class LoggerVerbosity : int {
 				ss << std::endl << td << lvl << ": "
 					<< short_name << " @ " << location.line() << ": ";
 				if (!preamble.empty()) ss << "[" << preamble << "]: ";
-				ss << msg;
+				ss << msg << " $"; // $ indicates end of message
 				if (console_logging_enabled) std::cout << ss.str();
 				if (log_file.is_open()) {
 					log_file << ss.str();

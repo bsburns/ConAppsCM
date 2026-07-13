@@ -129,9 +129,9 @@ SMPTE_FEC_Engine::SMPTE_FEC_Engine(std::string owning_stripe_name_, uint16_t str
             while (!TM.force_stop.load()) {
                 // Idle loop to fill FEC block 
                 if (this->idle.load() && this->block_started.load()) {
-                    LOG(LoggerVerbosity::INFO, "IdleFill: FEC block started but idle, injecting fill packets to maintain rate");
+                    LOG(LoggerVerbosity::INFO, "IdleFill: FEC block started but idle, injecting fill packets to maintain rate.");
                     // Inject fill packets here
-                    std::vector<uint8_t> fill_packet(1, 0); // Fill packet of 1 byte
+                    std::vector<uint8_t> fill_packet(40, 0); // Fill packet is empty but it need to be large enough to hold headers (UDP & RTP)
                     PacketHeaders fill_headers;
                     auto ipHdr = std::make_shared<PacketHeaderIPv4>();
                     ipHdr->Version = 4;
@@ -143,7 +143,7 @@ SMPTE_FEC_Engine::SMPTE_FEC_Engine(std::string owning_stripe_name_, uint16_t str
                     ipHdr->srcIP = 0;
                     ipHdr->dstIP = 0; // Destination IP can be set to 0 for now, or you can set it to a specific value if needed
                     fill_headers.AddHeader(ipHdr);
-                    this->PerformFEC(fill_headers, fill_packet, fill_packet.size(), true);
+                    this->PerformFEC(fill_headers, fill_packet, 0, true);
                 }
                 this->idle.store(true);
 
@@ -198,12 +198,14 @@ int SMPTE_FEC_Engine::PerformFEC(PacketHeaders& headers, std::vector<uint8_t>& d
     if (!fill) {
         LOG(LoggerVerbosity::INFO, "Performing FEC on packet with length=" + std::to_string(length)
             + " RTP_SEQ=" + std::to_string(rtp_hdr->sequence_number)
-            + " RxPktStats:" + StatsRxPackets.ToString());
+            + " RxPktStats:" + StatsRxPackets.ToString()
+        );
     }
     else {
         LOG(LoggerVerbosity::INFO, "Fill packet with length=" + std::to_string(length)
             + " RTP_SEQ=" + std::to_string(rtp_hdr->sequence_number)
-            + " FillPktStats:" + StatsFillPackets.ToString());
+            + " FillPktStats:" + StatsFillPackets.ToString()
+        );
     }
     fecTxBlock->AddPacket(rtp_hdr, headers, data, length, rtp_hdr->sequence_number);
 
@@ -221,22 +223,6 @@ int SMPTE_FEC_Engine::PerformFEC(PacketHeaders& headers, std::vector<uint8_t>& d
     );
     udpClientData->SendPacket(headers, data, length);
 
-    // Stopped here
-        // If we have reached the end of a FEC block, send the FEC packets
-    //if (send_fec_column_fec) {
-    //    LOG(LoggerVerbosity::INFO, "Sending Column FEC packets for block ending at seq="
-    //        + std::to_string(rtp_hdr->sequence_number));
-    //    for (size_t col = 0; col < current_column_fec_packets.size(); ++col) {
-    //        auto& fec_pkt = current_column_fec_packets[col];
-    //        if (fec_pkt.payload.size() > 0) {
-    //            // Send fec_pkt to UDP Port for column FEC
-    //            StatsFecColPackets.addValue(fec_pkt.payload.size());
-    //            LOG(LoggerVerbosity::INFO, "Sent Column FEC packet for column " + std::to_string(col)
-    //                + " size=" + std::to_string(fec_pkt.payload.size())
-    //                + " FecColStats:" + StatsFecColPackets.ToString());
-    //        }
-    //    }
-    //}
     return 0; // Return 0 for success
 }
 

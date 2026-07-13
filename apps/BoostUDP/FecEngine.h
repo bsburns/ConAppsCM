@@ -21,12 +21,12 @@
 #include "logger.h"
 
 enum class RTP_PayloadTypeE : uint8_t {
-    NOTSET = 0,
-    NO_FEC = 98,
-    MODE_A_FEC = 97, // Column FEC
-    MODE_B_FEC = 96,  // Row and Column FEC  
+    NOTSET       = 0,
+    MODE_B_FEC   = 96,  // Row and Column FEC  
+    MODE_A_FEC   = 97, // Column FEC
+    NO_FEC       = 98,
     FEC_DATAGRAM = 99,
-    FILL_DATA = 100
+    FILL_DATA    = 100
 };
 
 

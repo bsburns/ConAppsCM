@@ -234,7 +234,7 @@ public:
         instaneous_cnt_rate_ = 1.0 / elapsed.count();
 		instaneous_unit_rate_ = value / elapsed.count();
         if (debug_) {
-            std::cout << "\n\n"
+            std::cout << "\n\nStats::"
                 << Base::LongName
                 //<< " curr_time=" << curr_time
                 << " elapsed_time=" << elapsed.count()
