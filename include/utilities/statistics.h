@@ -11,6 +11,7 @@
 #include <vector>
 #include <chrono>
 #include <iostream>
+#include "magic_enum.hpp"
 
 // CRTP Implementation for stats
 class StatisticsBase {
@@ -35,7 +36,7 @@ public:
         for (auto child : ChildStats) {
             child->clear();
         }
-        ChildStats.clear();
+        //ChildStats.clear();
     }
 
     std::string FormatChildren(std::string indent = "") {
@@ -106,7 +107,7 @@ public:
         : StatisticsBaseCRTP<StatisticsNone>(name, parent) {
     }
 
-   
+    void clear() {}
     std::string GetColumnHeader() override {
         return Base::GetChildColumnHeader();
     }
@@ -145,6 +146,14 @@ public:
         // Allow derived class to extend behavior
         //static_cast<Derived*>(this)->onValueAdded(value);
     }
+    
+    void clear() {
+        count_ = 0;
+        sum_ = T{};
+        min_ = std::numeric_limits<T>::max();
+        max_ = std::numeric_limits<T>::lowest();
+    }
+
 
     // Getters
     size_t count() const { return count_; }
@@ -267,6 +276,24 @@ public:
         //static_cast<Derived*>(this)->onValueAdded(value);
     }
 
+    void clear() {
+        period_secs_ = 1.0;
+        count_ = 0;
+        sum_ = T{};
+        min_ = std::numeric_limits<T>::max();
+        max_ = std::numeric_limits<T>::lowest();
+        last_sample_time_ = std::chrono::steady_clock::now();
+        last_period_time_ = std::chrono::steady_clock::now();
+        instaneous_cnt_rate_ = 0.0;
+        instaneous_unit_rate_ = 0.0;
+        period_cnt_rate_ = 0.0;
+        period_unit_rate_ = 0.0;
+        prev_period_cnt_rate_ = 0.0;
+        prev_period_unit_rate_ = 0.0;
+        prev_period_cnt_ = 0;
+        prev_period_sum_ = T{};
+    }
+
     // Getters
     size_t count() const { return count_; }
     T sum() const { return sum_; }
@@ -330,6 +357,72 @@ public:
         str += " iups=" + std::to_string(instaneous_unit_rate_);
         str += " pups=" + std::to_string(period_unit_rate_);
         str += Base::ToStringChild();
+        return str;
+    }
+};
+
+template <class T, class E>
+class StatisticsCodedRTM {
+public:
+    std::map < E, StatisticsRTM<T>> codedStats;
+
+    StatisticsCodedRTM() {}
+    StatisticsCodedRTM(std::string name, StatisticsBase* parent = nullptr, double period_secs = 1, bool debug = false) {
+        constexpr auto codes = magic_enum::enum_values<E>();
+        for (const auto& code : codes) {
+            codedStats[code] = StatisticsRTM<T>(name + ":" + std::string(magic_enum::enum_name(code)), parent, period_secs, debug);
+        }
+    }
+
+    void addValue(E code, const T& value) {
+        codedStats[code].addValue(value);
+    }
+
+    void clear() {
+        for (auto& [code, stat] : codedStats) {
+            stat.clear();
+        }
+    }
+
+    // Getters
+    size_t count(E code) const { return codedStats[code].count(); }
+    T sum(E code) const { return codedStats[code].sum(); }
+    T mean(E code) const {
+        if (codedStats[code].count() == 0) return 0;
+        return codedStats[code].sum() / static_cast<T>(codedStats[code].count());
+    }
+    T min(E code) const {
+        return codedStats[code].min();
+    }
+    T max(E code) const {
+        return codedStats[code].max();
+    }
+    double instaneousCountRate(E code) const { return codedStats[code].instaneousCountRate(); }
+    double instaneousUnitRate(E code) const { return codedStats[code].instaneousUnitRate(); }
+    double periodCountRate(E code) const { return codedStats[code].periodCountRate(); }
+    double periodUnitRate(E code) const { return codedStats[code].periodUnitRate(); }
+
+    std::string GetColumnHeader() {
+        std::string str;
+        for (const auto& [code, stat] : codedStats) {
+            str += stat.GetColumnHeader();
+        }
+        return str;
+    }
+
+    std::string GetColumnData() {
+        std::string str;
+        for (const auto& [code, stat] : codedStats) {
+            str += stat.GetColumnData();
+        }
+        return str;
+    }
+
+    std::string ToString() {
+        std::string str;
+        for (const auto& [code, stat] : codedStats) {
+            str += stat.ToString();
+        }
         return str;
     }
 };

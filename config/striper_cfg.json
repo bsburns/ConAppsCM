@@ -7,7 +7,7 @@
     },
   "stripeCfg": {
     "AbsMaxPacketRate_pps": 0.0,
-    "MinPacketRate_pps": 0.0,
+    "MinPacketRate_pps": 10.0,
     "Mode": "OptionA",
     "Parm_D_rows": 5,
     "Parm_L_cols": 5,

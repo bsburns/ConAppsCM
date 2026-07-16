@@ -35,3 +35,25 @@ target_include_directories(bUDPC
 )
 # Link against the Modern CMake header target
 target_link_libraries(bUDPC PRIVATE Boost::headers cli_lib)
+
+add_executable(testC test-Client.cpp "FecEngine.h" "common.h" "FecEngine.cpp")
+
+target_include_directories(testC
+    PUBLIC
+        ${PROJECT_SOURCE_DIR}/include
+        ${PROJECT_SOURCE_DIR}/include/PacketHeader
+        ${PROJECT_SOURCE_DIR}/external_libraries
+)
+# Link against the Modern CMake header target
+target_link_libraries(testC PRIVATE Boost::headers cli_lib)
+
+add_executable(testS test-Server.cpp "FecEngine.h" "common.h" "FecEngine.cpp")
+
+target_include_directories(testS
+    PUBLIC
+        ${PROJECT_SOURCE_DIR}/include
+        ${PROJECT_SOURCE_DIR}/include/PacketHeader
+        ${PROJECT_SOURCE_DIR}/external_libraries
+)
+# Link against the Modern CMake header target
+target_link_libraries(testS PRIVATE Boost::headers cli_lib)

@@ -24,27 +24,53 @@
 enum class RTP_PayloadTypeE : uint8_t {
     NOTSET       = 0,
     MODE_B_FEC   = 96,  // Row and Column FEC  
-    MODE_A_FEC   = 97, // Column FEC
+    MODE_A_FEC   = 97,  // Column FEC
     NO_FEC       = 98,
     FEC_DATAGRAM = 99,
     FILL_DATA    = 100
 };
 
+class FEC_Datagram {
+public:
+    PacketHeaders headers;
+    std::shared_ptr<PacketHeaderRTP> rtp_header = nullptr;
+    std::vector<uint8_t> payload;
+    size_t payload_length = 0;
+    
+    FEC_Datagram() {
+        headers.Clear();
+        payload.clear();
+    }
+    FEC_Datagram(const std::shared_ptr<PacketHeaderRTP> rtpHdr_, const PacketHeaders& headers_, const std::vector<uint8_t>& data_, std::size_t length_)
+        : rtp_header(rtpHdr_)
+        , headers(headers_)
+        , payload(data_)
+        , payload_length(length_)
+    {
+
+    }
+};
 
 class FEC_Packet {
 public:
     PacketHeaders headers;
-    std::shared_ptr<PacketHeaderSMPTE> fec_header;
+    std::shared_ptr<PacketHeaderSMPTE> fec_header = nullptr;
     std::vector<uint8_t> payload;
     size_t payload_length = 0;
     bool first = true;
 
     FEC_Packet() 
-        : payload(1550) 
+        : payload(1550, 0) 
     { 
         fec_header = std::make_shared<PacketHeaderSMPTE>();
-        Clear();
     }
+
+    FEC_Packet(const std::shared_ptr<PacketHeaderSMPTE> fecHdr_, const PacketHeaders& headers_, const std::vector<uint8_t>& data_, std::size_t length_)
+        : fec_header(fecHdr_)
+        , headers(headers_)
+        , payload(data_)
+        , payload_length(length_)
+    { }
 
     void Clear() {
         headers.Clear();
@@ -111,16 +137,21 @@ class FEC_RX_Block {
 private:
     SMPTE_FEC_Engine* FEC_Engine;
     uint32_t block_num;
-    std::vector<std::vector<FEC_Packet>> matrixOfDataPkts;
-    std::vector<FEC_Packet> row_fec;
-    std::vector<FEC_Packet> col_fec;
+    bool rx_last_cell = false;
+    bool rx_last_fec_row = false;
+    bool rx_last_fec_col = false;
+    std::vector<std::map<uint16_t, FEC_Datagram>> matrixOfDataPkts;
+    std::map<uint16_t, FEC_Packet> row_fec;
+    std::map<uint16_t, FEC_Packet> col_fec;
     std::chrono::time_point<std::chrono::system_clock> startTime;
 
 public:
     FEC_RX_Block() {}
     FEC_RX_Block(SMPTE_FEC_Engine* FEC_Engine_, uint32_t block_num_);
 
-    void ReceivePacket(const std::shared_ptr<PacketHeaderRTP> rtpHdr, const PacketHeaders& headers, const std::vector<uint8_t>& data, std::size_t length, uint16_t seq_num);
+    int ReceivePacket(const std::shared_ptr<PacketHeaderRTP> rtpHdr, const PacketHeaders& headers, const std::vector<uint8_t>& data, std::size_t length);
+    int ReceivedFecPacket(UdpStriperPortE port_mode, const std::shared_ptr<PacketHeaderRTP> rtpHdr, const std::shared_ptr<PacketHeaderSMPTE> fecHdr, const PacketHeaders& headers, const std::vector<uint8_t>& data, std::size_t length);
+    void CheckBlock();
 };
 
 class SMPTE_FEC_Engine {
@@ -154,12 +185,13 @@ public:
     StatisticsRTM<uint64_t> StatsFillPackets;
     StatisticsRTM<uint64_t> StatsFecColPackets;
     StatisticsRTM<uint64_t> StatsFecRowPackets;
+    StatisticsCodedRTM<uint64_t, FecEngineDropCodesE> StatsDropPackets;
 
 public:
     SMPTE_FEC_Engine(std::string owning_stripe_name_, uint16_t stripe_num, StriperModeE mode_, AllStriperConfig* striper_config_);
 
     int PerformFEC(PacketHeaders& headers, std::vector<uint8_t>& data, std::size_t length, bool fill = false);
-    int ReceivePacket(PacketHeaders& headers, std::vector<uint8_t>& data, std::size_t length, bool fill = false);
+    int ReceivePacket(PacketHeaders& headers, std::vector<uint8_t>& data, std::size_t length);
 };
 
 

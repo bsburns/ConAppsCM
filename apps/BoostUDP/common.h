@@ -23,3 +23,9 @@ enum class DeqMsgType : int {
     PACKET = 2,
     EXIT_PROCESS = 3
 };
+
+enum class FecEngineDropCodesE : int {
+    PROCESSING_ERROR,
+    FILL_PACKET,
+
+};

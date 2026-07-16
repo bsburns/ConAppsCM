@@ -97,6 +97,14 @@ static std::ostream& operator<<(std::ostream& os, const StripeShmDequeMessage& m
         os << ", headers=[";
         for (auto it = msg.headers.begin(); it != msg.headers.end(); ++it) {
             os << std::string(magic_enum::enum_name(it->htype));
+            if (1) {
+                std::vector<uint8_t> header_vec(it->header.begin(), it->header.end());
+                os << "(";
+                    for (auto hb_it = header_vec.begin(); hb_it != header_vec.end(); ++hb_it) {
+                        os << std::to_string(static_cast<int>(*hb_it)) << ",";
+                }
+                os << ")";
+            }
             if (std::next(it) != msg.headers.end()) os << ", ";
         }
         os << "]";
@@ -123,7 +131,7 @@ static std::ostream& operator<<(std::ostream& os, const StripeShmDequeMessage& m
             os << " Packet: [";
             for (auto it = msg.data.begin(); it != msg.data.end() && count; ++it, --count) {
                 os << std::to_string(static_cast<int>(*it));
-                if (std::next(it) != msg.data.end() || count != 1) os << ", ";
+                if (std::next(it) != msg.data.end() || count > 0) os << ", ";
             }
             os << "]";
 
@@ -261,7 +269,7 @@ public:
         msg.data.assign(std::make_move_iterator(data_.begin()), std::make_move_iterator(data_.begin() + length_));
         std::stringstream ss;
         ss << msg;
-        LOG(LoggerVerbosity::INFO, "SPM: Created SHM Packet:" + ss.str());
+        LOG(LoggerVerbosity::INFO, "SPM: Created SHM Packet:" + ss.str() + " on shm_name="+shm_name);
 
         // Place Packet on Shared Deque
         shared_data->mutex.lock();
@@ -311,6 +319,8 @@ public:
         , stripe_it(stripe_processors.begin())
     {}
 
+#define SHM_DEQUE_SIZE 0x80'000
+
     int InitializeInternal(StriperModeE mode_, std::string path_, std::string args_) {
         mode = mode_;
         process_path = path_;
@@ -332,7 +342,7 @@ public:
             LOG(LoggerVerbosity::INFO, "ISSPM: Starting Stripe Process: " + process_name + " at path: " + process_path + " with args: " + process_args);
 
             try {
-                StripeProcessManager spm(process_name.c_str(), 65536, mode); // 64KB shared memory for each stripe
+                StripeProcessManager spm(process_name.c_str(), SHM_DEQUE_SIZE, mode); // 64KB shared memory for each stripe
                 spm.startStripeProcess(process_path + stripe_args);
                 stripe_processors.emplace_back(std::move(spm));
             }
@@ -409,28 +419,31 @@ public:
                 + " port_mode=" + std::string(magic_enum::enum_name(port_mode))
             );
             return;
-        }
-        else if (pm == 2 && port_mode != UdpStriperPortE::STRIPER_PORT_FEC_COL) {
+        } else if (pm == 2 && port_mode != UdpStriperPortE::STRIPER_PORT_FEC_COL) {
             LOG(LoggerVerbosity::ERR, "ISSPM: Mistmatch between Destination Port and port_mode: Destination Port=" + std::to_string(udpHdr->dstPort)
                 + " pm=" + std::to_string(pm)
                 + " port_mode=" + std::string(magic_enum::enum_name(port_mode))
             );
             return;
-        }
-        else if (pm == 4 && port_mode != UdpStriperPortE::STRIPER_PORT_FEC_ROW) {
+        } else if (pm == 4 && port_mode != UdpStriperPortE::STRIPER_PORT_FEC_ROW) {
             LOG(LoggerVerbosity::ERR, "ISSPM: Mistmatch between Destination Port and port_mode: Destination Port=" + std::to_string(udpHdr->dstPort)
                 + " pm=" + std::to_string(pm)
                 + " port_mode=" + std::string(magic_enum::enum_name(port_mode))
             );
             return;
-        }
-        else if (pm != 0 && pm != 2 && pm != 4) {
+        } else if (pm != 0 && pm != 2 && pm != 4) {
             LOG(LoggerVerbosity::ERR, "ISSPM: Invalid PM: Destination Port=" + std::to_string(udpHdr->dstPort)
                 + " pm=" + std::to_string(pm)
                 + " port_mode=" + std::string(magic_enum::enum_name(port_mode))
             );
             return;
         }
+
+        auto udpH = std::dynamic_pointer_cast<PacketHeaderUDP>(headers.headers[1]);
+        
+        // B2 - DEBUG statement
+        if (udpH->dstPort == 5002)
+            LOG(LoggerVerbosity::INFO, "ISSPM: ReceivePacket: Sending to stripe processor: " + headers.ToString());
         stripe_processors[stripe_num].MovePacketToSHM(headers, data, length);
     }
 
@@ -541,18 +554,29 @@ StripeProcess::StripeProcess(std::string name_, uint16_t stripe_num_, StriperMod
                         PacketHeaders pkt_headers;
                         for (const auto& shmHdr : msg.headers) {
                             std::shared_ptr<PacketHeaderBase> hdr = nullptr;
+                            std::vector<uint8_t> header_vec(shmHdr.header.begin(), shmHdr.header.end());
                             switch (shmHdr.htype) {
                             case PacketHeaderType::IPv4:
-                                hdr = std::make_shared<PacketHeaderIPv4>();
+                                hdr = std::make_shared<PacketHeaderIPv4>(header_vec);
                                 break;
                             case PacketHeaderType::RTP:
-                                hdr = std::make_shared<PacketHeaderRTP>();
+                                hdr = std::make_shared<PacketHeaderRTP>(header_vec);
                                 break;
                             case PacketHeaderType::SMPTE:
-                                hdr = std::make_shared<PacketHeaderSMPTE>();
+                                hdr = std::make_shared<PacketHeaderSMPTE>(header_vec);
                                 break;
                             case PacketHeaderType::UDP:
-                                hdr = std::make_shared<PacketHeaderUDP>();
+                                /* B2 - Replaced with following debug code
+                                hdr = std::make_shared<PacketHeaderUDP>(header_vec);
+                                */
+                                {
+                                auto uhdr = std::make_shared<PacketHeaderUDP>(header_vec);
+                                hdr = uhdr;
+                                if (uhdr->dstPort == 5002) {
+                                    LOG(LoggerVerbosity::INFO, "MonitorDeque: Received UDP Packet to port 5002: length="
+                                        + std::to_string(msg.msg_length) + " " + uhdr->to_string());
+                                }
+                                }
                                 break;
                             default:
                                 LOG(LoggerVerbosity::ERR, "Unknown header type in shared memory: " + std::string(magic_enum::enum_name(shmHdr.htype)));
@@ -561,9 +585,7 @@ StripeProcess::StripeProcess(std::string name_, uint16_t stripe_num_, StriperMod
                                 LOG(LoggerVerbosity::ERR, "Failed to create header object for type: " + std::string(magic_enum::enum_name(shmHdr.htype)));
                                 break;
                             }
-                            std::vector<uint8_t> header_vec(shmHdr.header.begin(), shmHdr.header.end());
-                            auto deserialized_hdr = hdr->deserialize(header_vec);
-                            pkt_headers.AddHeader(std::move(deserialized_hdr), -1);
+                            pkt_headers.AddHeader(hdr, -1);
                         }
 
                         std::vector<uint8_t> vec_data(msg.data.begin(), msg.data.end());
@@ -571,6 +593,10 @@ StripeProcess::StripeProcess(std::string name_, uint16_t stripe_num_, StriperMod
                             LOG(LoggerVerbosity::ERR, "SP: Data size does not match msg_length in shared memory: "
                                 + std::to_string(vec_data.size()) + " vs " + std::to_string(msg.msg_length));
                         }
+
+                        LOG(LoggerVerbosity::INFO, "MonitorDeque: Received Packet: length=" + std::to_string(msg.msg_length)
+                            + " " + pkt_headers.ToString());
+
                         this->ReceivedPacket(pkt_headers, vec_data, msg.msg_length);
                     }
                         break;

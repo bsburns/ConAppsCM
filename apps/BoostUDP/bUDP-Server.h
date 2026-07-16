@@ -54,7 +54,6 @@ private:
     udp::socket socket_;
     udp::endpoint remote_endpoint_;
     std::vector<uint8_t> recv_buffer_{ std::vector<uint8_t>(4096, 0) };
-    std::set<udp::endpoint> known_clients_; // Active client registry
     std::map<udp::endpoint, udp_connection> KnownClientConnections; // Map of client endpoints to their connection info
 
     void start_receive() {
@@ -226,8 +225,7 @@ private:
                     + " - FM::Striper::Receiver - Add UDP header: " + udpHdr->to_string());
 
                 // Get RTP Header from recv_buffer_ and add it to pktHdr
-                auto rtpHdr = std::make_shared<PacketHeaderRTP>();
-                rtpHdr->deserialize(recv_buffer_);
+                auto rtpHdr = std::make_shared<PacketHeaderRTP>(recv_buffer_);
                 pktHdr.AddHeader(rtpHdr, -1);
 
                 stripesMgr->ReceivePacket(port_mode, pktHdr, recv_buffer_, length);
@@ -293,6 +291,29 @@ private:
                 } else {
                     stripesMgr->ReceiveFirstPacket(port_mode, pktHdr, recv_buffer_, length);
                 }
+            }  else if (StriperMode == StriperModeE::TRANSMITTER) {
+                // convert to packet format
+                // Create IPv4 and UDP headers for the packet
+                PacketHeaders pktHdr;
+                auto ipHdr = std::make_shared<PacketHeaderIPv4>();
+                ipHdr->Version = 4;
+                ipHdr->IHL = 5; // 5 * 4 = 20 bytes
+                ipHdr->TOS = 0;
+                ipHdr->totalLength = ipHdr->Size() + PacketHeaderUDP().Size() + length;
+                ipHdr->TTL = 64;
+                ipHdr->Protocol = static_cast<uint8_t>(PacketHeaderType::UDP); // UDP
+                ipHdr->srcIP = KnownClientConnections[remote_endpoint_].srcIP;
+                ipHdr->dstIP = 0; // Destination IP can be set to 0 for now, or you can set it to a specific value if needed
+                pktHdr.AddHeader(ipHdr);
+
+                auto udpHdr = std::make_shared<PacketHeaderUDP>();
+                udpHdr->srcPort = KnownClientConnections[remote_endpoint_].srcPort;
+                udpHdr->dstPort = port;
+                udpHdr->length = udpHdr->Size() + length;
+                pktHdr.AddHeader(udpHdr);
+                LOG(LoggerVerbosity::INFO, remote_str_log +
+                    " - FM::Striper::Transmitter - Add UDP header: " + udpHdr->to_string());
+                stripesMgr->SendPacket(pktHdr, recv_buffer_, length);
             }
         } else {
             std::cout << "Unhandled Mode: "

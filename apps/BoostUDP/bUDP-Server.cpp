@@ -83,6 +83,7 @@ int main(int argc, char* argv[]) {
     std::string StripeProcessName = "";
     uint32_t WaitDebugAttachIterations = 0;
     StripeProcess* StripeProc = nullptr;
+    std::string pass_arg_str = "";
 
 	LOG_INST.verbosity = verbosity;
     LOG_INST.SetTimeStamping(false);
@@ -115,6 +116,11 @@ int main(int argc, char* argv[]) {
         CLP_Command("logfile, l", "Specifies Log file name", [&LogFile](const std::string& argument) {
             LogFile = argument;
         }, "bUDPS.log", typeid(std::string)),
+        CLP_Command("timestamping, T", "Adds timestamps to log entries",
+            [&pass_arg_str](const std::string& argument) {
+            LOG_INST.SetTimeStamping(true);
+            pass_arg_str += " --timestamping";
+        }, "", typeid(void)),
         CLP_Command("server_port, p", "Specifies UDP Port number of server", [&ServerPort](const std::string& argument) {
             ServerPort = argument;
         }, "8080", typeid(std::string)),
@@ -122,11 +128,11 @@ int main(int argc, char* argv[]) {
             StripeProcessName = argument;
             LOG_INST.SetPreamble(argument);
         }, "", typeid(std::string)),
-        CLP_Command("rx_striper, r", "Striper Mode is Receiver (receives FEC streams)", 
+        CLP_Command("rx_striper, r", "Striper Mode is Receiver (receives FEC streams", 
             [](const std::string& argument) {
             StriperMode = StriperModeE::RECEIVER;
         }, "", typeid(void)),
-        CLP_Command("tx_striper, t", "Striper Mode is transmitter (creates FEC streams)",
+        CLP_Command("tx_striper, t", "Striper Mode is transmitter (creates FEC streams",
             [](const std::string& argument) {
             StriperMode = StriperModeE::TRANSMITTER;
         }, "", typeid(void)),
@@ -213,6 +219,14 @@ int main(int argc, char* argv[]) {
         exit(300);
     }
 
+    if (LogFile == "bUDPS.log") {
+        if (StriperMode == StriperModeE::RECEIVER) {
+            LogFile = "bUDPS_MainReceiver.log";
+        }
+        else if (StriperMode == StriperModeE::TRANSMITTER) {
+            LogFile = "bUDPS_MainTransmitter.log";
+        }
+    }
     LOG_INST.SetLogFile(LogFile);
     LOG(LoggerVerbosity::DEBUG, "Starting log file: " + LogFile);
     auto vname = std::string(magic_enum::enum_name(LOG_INST.verbosity));
@@ -306,6 +320,7 @@ int main(int argc, char* argv[]) {
             process_args += " -y " + std::to_string(WaitDebugAttachIterations);
             process_args += " --outdir " + OutDir;
             process_args += StriperMode == StriperModeE::TRANSMITTER ? " --tx_striper" : " --rx_striper";
+            process_args += pass_arg_str;
 
             //std::string process_args2;
             //for (int i = 1; i < argc; i++) {

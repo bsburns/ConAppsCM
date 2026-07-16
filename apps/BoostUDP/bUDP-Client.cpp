@@ -93,7 +93,7 @@ int main(int argc, char* argv[]) {
         CLP_Command("source_port, a", "Specifies UDP Source Port number of this client", [&SourcePort](const std::string& argument) {
             SourcePort = argument;
         }, "100", typeid(std::string)),
-        CLP_Command("interactive, i", "Allows multiple Messages to be sent from client", [&interactiveMode](const std::string& argument) {
+        CLP_Command("interactive, i", "Interactively queries users for messages to be sent from client", [&interactiveMode](const std::string& argument) {
             interactiveMode = true;
         }, "", typeid(void)),
         CLP_Command("server_ip,s", "Specifies IP address of server", [&ServerIP](const std::string& argument) {

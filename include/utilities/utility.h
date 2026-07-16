@@ -93,5 +93,8 @@ inline bool loadListFromFile(std::list<std::string>& data, const std::string& fi
 //    return oss.str();
 //}
 
+inline std::string boolToString_ternary(bool value) {
+    return value ? "true" : "false";
+}
 
 } // end namespace util
