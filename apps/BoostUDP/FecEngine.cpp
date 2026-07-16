@@ -10,10 +10,12 @@
 
 #include "FecEngine.h"
 #include "utility.h"
+#include "bStripes.h"
 
 
-SMPTE_FEC_Engine::SMPTE_FEC_Engine(std::string owning_stripe_name_, uint16_t stripe_num_, StriperModeE mode_, AllStriperConfig* striper_config_)
-    : owning_stripe_name(owning_stripe_name_)
+SMPTE_FEC_Engine::SMPTE_FEC_Engine(StripeProcess* owning_, std::string owning_stripe_name_, uint16_t stripe_num_, StriperModeE mode_, AllStriperConfig* striper_config_)
+    : owning_process(owning_)
+    , owning_stripe_name(owning_stripe_name_)
     , stripe_num(stripe_num_)
     , mode(mode_)
     , striperConfig(striper_config_)
@@ -158,29 +160,6 @@ SMPTE_FEC_Engine::SMPTE_FEC_Engine(std::string owning_stripe_name_, uint16_t str
         // RECEIVE FEC ENGINE
         LOG(LoggerVerbosity::INFO, "FEC Engine is in RECEIVER mode, not creating UDP clients for FEC streams.");
         fecRxBlocks.clear();
-
-        // Setup UDP port to send data packets to
-        auto destIP = striperConfig->stripeCfg.DeStripeIpAddress;
-        auto dport = std::to_string(striperConfig->stripeCfg.DeStripeDstPortNumber);
-        auto sport = "20000";
-
-        udpClientData = std::make_shared< UdpClient>(io_context_fec, destIP, sport, dport, UdpSendMode::PACKET);
-        if (udpClientData == nullptr) {
-            LOG(LoggerVerbosity::ERR, "Could not create UDP client for De-striped data: Stripe=" + owning_stripe_name
-                + " ServerIP=" + destIP
-                + " SrcPort=" + sport
-                + " DstPort=" + dport
-            );
-            return;
-        }
-        else {
-            LOG(LoggerVerbosity::INFO, "Created UDP client for De-striped data: Stripe=" + owning_stripe_name
-                + " ServerIP=" + destIP
-                + " SrcPort=" + sport
-                + " DstPort=" + dport
-            );
-        }
-        udpClientData->StartPacketMode();
     }
 }
 
@@ -341,6 +320,10 @@ int SMPTE_FEC_Engine::ReceivePacket(PacketHeaders& headers, std::vector<uint8_t>
                 // Send Packet on
                 LOG(LoggerVerbosity::INFO, "FEC:ReceivePacket: Received valid Data Packet: " + headers.ToString());
                 // B2 - need to add send code here
+                if (!fill) {
+                    // Not a FILL packet, so send to downstream device, data with no headers
+                    SendDataPacket(data, length);
+                }
             }
             else {
                 StatsDropPackets.addValue(FecEngineDropCodesE::FILL_PACKET, length);
@@ -356,11 +339,6 @@ int SMPTE_FEC_Engine::ReceivePacket(PacketHeaders& headers, std::vector<uint8_t>
             return -7;
         }
 
-        if (!fill) {
-            // Not a FILL packet, so send to downstream device, data with no headers
-            PacketHeaders dummyHdrs;
-            udpClientData->SendPacket(dummyHdrs, data, length);
-        }
         }
         break;
     case RTP_PayloadTypeE::FEC_DATAGRAM:
@@ -399,6 +377,29 @@ int SMPTE_FEC_Engine::ReceivePacket(PacketHeaders& headers, std::vector<uint8_t>
     }
 
     return 0; // Return 0 for success
+}
+
+void SMPTE_FEC_Engine::SendDataPacket(std::vector<uint8_t>& data, std::size_t length) {
+    PacketHeaders pktHeaders;
+
+    // Assume data has original IP header and UDP header
+    // Extract IP Header
+    auto ipHdr = std::make_shared<PacketHeaderIPv4>(data);
+
+    // Now remove IP header from data
+    length -= ipHdr->Size();
+    data.erase(data.begin(), data.begin() + ipHdr->Size());
+    pktHeaders.AddHeader(ipHdr);
+
+    // Extract UDP Header
+    auto udpHdr = std::make_shared<PacketHeaderUDP>(data);
+
+    // Now remove UDP header from data
+    length -= udpHdr->Size();
+    data.erase(data.begin(), data.begin() + udpHdr->Size());
+    pktHeaders.AddHeader(udpHdr, -1);
+
+    owning_process->SendDestripePacket(pktHeaders, data, length);
 }
 
 // FEC_TX_BLOCK

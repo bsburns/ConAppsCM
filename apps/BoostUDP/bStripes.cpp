@@ -170,29 +170,199 @@ struct StripeSharedData {
     }
 };
 
+class StripeProcessManager; // forward declaration
+
+class DownstreamConnection {
+public:
+    uint16_t sourcePort = 0;
+    std::shared_ptr<UdpClient> udpClientDS = nullptr;
+
+    DownstreamConnection() {}
+
+    int Initialize(boost::asio::io_context &io_context_, AllStriperConfig * striperConfig_, uint16_t sourcePort_) {
+        sourcePort = sourcePort_;
+
+        // Setup UDP port to send data packets to
+        auto destIP = striperConfig_->stripeCfg.DeStripeIpAddress;
+        auto dport = std::to_string(striperConfig_->stripeCfg.DeStripeDstPortNumber);
+        auto sport = std::to_string(sourcePort);
+
+        udpClientDS = std::make_shared< UdpClient>(io_context_, destIP, sport, dport, UdpSendMode::PACKET);
+        if (udpClientDS == nullptr) {
+            LOG(LoggerVerbosity::ERR, "Could not create UDP client for De-striped data: "
+                " ServerIP=" + destIP
+                + " SrcPort=" + sport
+                + " DstPort=" + dport
+            );
+            return 1;
+        }
+        else {
+            LOG(LoggerVerbosity::INFO, "Created UDP client for De-striped data:"
+                " ServerIP=" + destIP
+                + " SrcPort=" + sport
+                + " DstPort=" + dport
+            );
+        }
+        udpClientDS->StartPacketMode();
+        return 0;
+    }
+};
+
 // Class to manage an individual stripe process
 class StripeProcessManager {
 public:
     std::string shm_name;
     StriperModeE mode;
     size_t shm_size;
+    AllStriperConfig* striper_config;
     std::unique_ptr<boost::interprocess::managed_shared_memory> segment;
+    std::unique_ptr<boost::interprocess::managed_shared_memory> destripe_segment;
     bp::v1::child stripe_process;
     StripeSharedData* shared_data;
+    StripeSharedData* destripe_shared_data;
+    std::map<uint16_t, DownstreamConnection> downstreamConnections;
+    boost::asio::io_context io_context_SPM;
 
-    StripeProcessManager(const char* shm_name_, size_t shm_size_, StriperModeE mode_)
+
+    StripeProcessManager(const char* shm_name_, size_t shm_size_, StriperModeE mode_, AllStriperConfig* striper_config_)
         : shm_name(shm_name_)
         , shm_size(shm_size_)
         , mode(mode_)
+        , striper_config(striper_config_)
     {
         std::string SharedDataStr = "SharedData" + std::string(magic_enum::enum_name(mode));        
         shared_memory_object::remove(shm_name.c_str());
-		LOG(LoggerVerbosity::INFO, "Creating shared memory segment: " + shm_name + " of size: " + std::to_string(shm_size) + " SharedDataStr=" + SharedDataStr);
+		LOG(LoggerVerbosity::INFO, "Creating shared memory segment: " 
+            + shm_name 
+            + " of size: " + std::to_string(shm_size) 
+            + " SharedDataStr=" + SharedDataStr);
         segment = std::make_unique<boost::interprocess::managed_shared_memory>(
             boost::interprocess::create_only, shm_name.c_str(), shm_size);
 
         shared_data = segment->construct<StripeSharedData>(SharedDataStr.c_str())(segment->get_segment_manager());
         SendMessage("Hello");
+        if (mode == StriperModeE::RECEIVER) {
+            // Create a SHM segment for stripes to send de-striped packets too
+            std::string SharedDataStrDestripe = "SharedData" + std::string(magic_enum::enum_name(mode)) + "-Destripe";
+            std::string destripe_shm_name = shm_name + "-Destripe";
+            shared_memory_object::remove(destripe_shm_name.c_str());
+            LOG(LoggerVerbosity::INFO, "Creating shared memory segment for destriper: " + destripe_shm_name 
+                + " of size: " + std::to_string(shm_size) 
+                + " SharedDataStr=" + SharedDataStrDestripe);
+            destripe_segment = std::make_unique<boost::interprocess::managed_shared_memory>(
+                boost::interprocess::create_only, destripe_shm_name.c_str(), shm_size);
+
+            destripe_shared_data = destripe_segment->construct<StripeSharedData>(SharedDataStrDestripe.c_str())(destripe_segment->get_segment_manager());
+
+            ThreadManager& TM = ThreadManager::GetInstance();
+            TM.StartThread("MonitorDestripeDeque", [this, &TM, &SharedDataStrDestripe]() 
+                {
+                Watchdog& watchdog = Watchdog::GetInstance();
+
+                LOG(LoggerVerbosity::INFO, "SPM: Starting DeStripe Process Dequeue Monitor Thread");
+                // Read and pop elements from the deque
+                bool exit_loop = false;
+                while (!exit_loop && !TM.force_stop.load()) {
+                    bool msg_available;
+                    scoped_lock<interprocess_mutex> lock(destripe_shared_data->mutex);
+                    destripe_shared_data->cond_nonempty.wait(lock, [&]() {
+                        return !destripe_shared_data->stripe_deque.empty();
+                        });
+
+                    // Deque Not empty
+                    while (!destripe_shared_data->stripe_deque.empty()) {
+                        StripeShmDequeMessage msg = destripe_shared_data->stripe_deque.front();
+                        std::shared_ptr<PacketHeaderUDP> udpHdr = nullptr;
+                        switch (msg.msg_type) {
+                        case DeqMsgType::MESSAGE:
+                            LOG(LoggerVerbosity::ERR, "SPM: Do not expect meassages of type MESSAGE on Destripe Deque");
+                            break;
+                        case DeqMsgType::PACKET:
+                        {
+                            PacketHeaders pkt_headers;
+                            for (const auto& shmHdr : msg.headers) {
+                                std::shared_ptr<PacketHeaderBase> hdr = nullptr;
+                                std::vector<uint8_t> header_vec(shmHdr.header.begin(), shmHdr.header.end());
+                                switch (shmHdr.htype) {
+                                case PacketHeaderType::IPv4:
+                                    hdr = std::make_shared<PacketHeaderIPv4>(header_vec);
+                                    break;
+                                case PacketHeaderType::RTP:
+                                    hdr = std::make_shared<PacketHeaderRTP>(header_vec);
+                                    break;
+                                case PacketHeaderType::SMPTE:
+                                    hdr = std::make_shared<PacketHeaderSMPTE>(header_vec);
+                                    break;
+                                case PacketHeaderType::UDP:
+                                    /* B2 - Replaced with following debug code
+                                    hdr = std::make_shared<PacketHeaderUDP>(header_vec);
+                                    */
+                                {
+                                    udpHdr = std::make_shared<PacketHeaderUDP>(header_vec);
+                                    hdr = udpHdr;
+                                }
+                                  break;
+                                default:
+                                    LOG(LoggerVerbosity::ERR, "SPM: Unknown header type in shared memory: " + std::string(magic_enum::enum_name(shmHdr.htype)));
+                                    break;
+                                }
+                                if (hdr == nullptr) {
+                                    LOG(LoggerVerbosity::ERR, "SPM: Failed to create header object for type: " + std::string(magic_enum::enum_name(shmHdr.htype)));
+                                    break;
+                                }
+                                pkt_headers.AddHeader(hdr, -1);
+                            }
+
+                            std::vector<uint8_t> vec_data(msg.data.begin(), msg.data.end());
+                            if (vec_data.size() != static_cast<size_t>(msg.msg_length)) {
+                                LOG(LoggerVerbosity::ERR, "SPM: Data size does not match msg_length in shared memory: "
+                                    + std::to_string(vec_data.size()) + " vs " + std::to_string(msg.msg_length));
+                            }
+
+                            LOG(LoggerVerbosity::INFO, "SPM: MonitorDestripeDeque: Received Packet: length=" + std::to_string(msg.msg_length)
+                                + " " + pkt_headers.ToString());
+
+                            if (udpHdr == nullptr) {
+                                LOG(LoggerVerbosity::ERR, "SPM: Packet does not have a UDP Header!!");
+                            }
+                            else {
+                                auto sport = udpHdr->srcPort;
+                                auto [it, inserted] = downstreamConnections.emplace(sport, DownstreamConnection());
+                                if (inserted) {
+                                    auto rc = it->second.Initialize(io_context_SPM, striper_config, sport);
+                                    if (rc) {
+                                        LOG(LoggerVerbosity::ERR, "FEC_ENGINE: Failed to create downstream connection for Source Port=" + std::to_string(sport));
+                                        downstreamConnections.erase(sport);
+                                        return;
+                                    }
+                                }
+
+                                PacketHeaders dummyHeaders;
+                                it->second.udpClientDS->SendPacket(dummyHeaders, vec_data, msg.msg_length);
+                                LOG(LoggerVerbosity::INFO, "SPM: Sent Data Packet downstream:"
+                                    " Source UDP header=" + udpHdr->to_string()
+                                );
+                            }
+
+                        }
+                        break;
+                        case DeqMsgType::EXIT_PROCESS:
+                            exit_loop = true;
+                            TM.StopAllThreads();
+                            LOG(LoggerVerbosity::CRITICAL, "SPM:  Received Exit command");
+                            break;
+                        }
+                        std::stringstream ss;
+                        ss << msg;
+                        LOG(LoggerVerbosity::INFO, "SPM: Popped: " + ss.str());
+                        destripe_shared_data->stripe_deque.pop_front();
+                        watchdog.CheckIn();
+                    }
+                }
+                LOG(LoggerVerbosity::CRITICAL, "SPM: Exiting DeStripe Process Dequeue Monitor Thread");
+                }
+                );
+        }
     }
 
     // Non-copyable
@@ -342,7 +512,7 @@ public:
             LOG(LoggerVerbosity::INFO, "ISSPM: Starting Stripe Process: " + process_name + " at path: " + process_path + " with args: " + process_args);
 
             try {
-                StripeProcessManager spm(process_name.c_str(), SHM_DEQUE_SIZE, mode); // 64KB shared memory for each stripe
+                StripeProcessManager spm(process_name.c_str(), SHM_DEQUE_SIZE, mode, striperConfig); // 64KB shared memory for each stripe
                 spm.startStripeProcess(process_path + stripe_args);
                 stripe_processors.emplace_back(std::move(spm));
             }
@@ -512,14 +682,34 @@ StripeProcess::StripeProcess(std::string name_, uint16_t stripe_num_, StriperMod
 	SharedDataStr = "SharedData" + std::string(magic_enum::enum_name(mode));
     LOG(LoggerVerbosity::INFO, "SP: This is a Stripe Processor: " + name + " SharedDataSegment=" + SharedDataStr);
 
-    //segment = managed_shared_memory(open_only, name.c_str());
-
-
+    if (mode == StriperModeE::RECEIVER) {
+        // Find Shared Memory to packets to root process
+        std::string shm_name = name + "-Destripe";
+        std::string SharedDataStrDestripe = "SharedData" + std::string(magic_enum::enum_name(mode)) + "-Destripe";
+        LOG(LoggerVerbosity::INFO, "Searching for SHM Destripe Dequeue: shm_name=" + shm_name 
+            + " seg_name=" + SharedDataStrDestripe
+        );
+        boost::interprocess::managed_shared_memory destripe_segment(open_only, shm_name.c_str());
+        // Find the named deque instance
+        std::pair<StripeSharedData*, managed_shared_memory::handle_t> res = destripe_segment.find<StripeSharedData>(SharedDataStrDestripe.c_str());
+        if (res.first == nullptr) {
+            LOG(LoggerVerbosity::ERR, "SP: [" + name + "]: Failed to find SHM for Destripe deque: "
+                " shm_name="  + shm_name
+                + "seg_name=" + SharedDataStrDestripe
+            );
+        }
+        else {
+            LOG(LoggerVerbosity::INFO, "SP: [" + name + "]: Found SHM Destripe Dequeue: shm_name=" + shm_name
+                + " seg_name=" + SharedDataStrDestripe
+            );
+            DestripeData = res.first;
+        }
+    }
     ThreadManager& TM = ThreadManager::GetInstance();
     Watchdog& watchdog = Watchdog::GetInstance();
 
     // Create FEC Engine
-    fecEngine = std::make_unique<SMPTE_FEC_Engine>(name, stripe_num, mode, striperConfig);
+    fecEngine = std::make_unique<SMPTE_FEC_Engine>(this, name, stripe_num, mode, striperConfig);
     if (fecEngine == nullptr) {
         LOG(LoggerVerbosity::ERR, "SP:FEC Engine not initialized for Stripe Process: " + name);
     }
@@ -534,7 +724,8 @@ StripeProcess::StripeProcess(std::string name_, uint16_t stripe_num_, StriperMod
             StripeSharedData* my_data = res.first;
 
             // Read and pop elements from the deque
-            LOG(LoggerVerbosity::INFO, "Found deque with " + std::to_string(my_data->stripe_deque.size()) + " elements.");
+            LOG(LoggerVerbosity::INFO, "Found SHM Dequeue: name=" + this->SharedDataStr
+                + " with " + std::to_string(my_data->stripe_deque.size()) + " elements.");
             bool exit_loop = false;
             while (!exit_loop && !TM.force_stop.load()) {
                 bool msg_available;
@@ -634,4 +825,37 @@ void StripeProcess::ReceivedPacket(PacketHeaders& headers, std::vector<uint8_t>&
         LOG(LoggerVerbosity::INFO, "SP: Receiver Processor received a packet");
         fecEngine->ReceivePacket(headers, data, length);
     }
+}
+
+
+// Define missing member to resolve LNK2019
+void StripeProcess::SendDestripePacket(PacketHeaders& headers, std::vector<uint8_t>& data, std::size_t length)
+{
+    // Place packet SHM Destripe Deque
+    allocator<uint8_t, SegmentManager> byteAlloc(destripe_segment.get_segment_manager());
+    StripeShmDequeMessage msg(byteAlloc);
+    msg.msg_type = DeqMsgType::PACKET;
+
+    for (const auto& hdr : headers.headers) {
+        ShmPacketHeader shmHdr(byteAlloc);
+        shmHdr.htype = hdr->header_type;
+        auto hdrv = hdr->serialize();
+        for (auto& b : hdrv) {
+            shmHdr.header.emplace_back(b);
+        }
+        msg.headers.emplace_back(shmHdr);
+    }
+
+    msg.msg_length = length;
+    //msg.data = std::move(data_.begin(), data_.begin() + length_);
+    msg.data.assign(std::make_move_iterator(data.begin()), std::make_move_iterator(data.begin() + length));
+    std::stringstream ss;
+    ss << msg;
+    LOG(LoggerVerbosity::INFO, "SP: Created SHM Packet:" + ss.str());
+
+    // Place Packet on Shared Deque
+    DestripeData->mutex.lock();
+    DestripeData->stripe_deque.push_back(msg);
+    DestripeData->mutex.unlock();
+    DestripeData->cond_nonempty.notify_one();
 }

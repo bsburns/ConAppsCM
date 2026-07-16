@@ -49,6 +49,8 @@ private:
     std::unique_ptr<StripesManagerImpl> impl; // Pointer to hidden implementation
 };
 
+class StripeSharedData; // forward declare
+
 class StripeProcess {
 private:
     std::string name;
@@ -57,9 +59,12 @@ private:
     StriperModeE mode;
     AllStriperConfig* striperConfig;
     boost::interprocess::managed_shared_memory segment;
+    boost::interprocess::managed_shared_memory destripe_segment;
+    StripeSharedData* DestripeData = nullptr;
     std::unique_ptr<SMPTE_FEC_Engine> fecEngine = nullptr;
 
     void ReceivedPacket(PacketHeaders& headers, std::vector<uint8_t>& data, std::size_t length);
+
 public:
     StripeProcess() = delete;
     StripeProcess(std::string name_, uint16_t stripe_num_, StriperModeE mode_, AllStriperConfig* striper_config_);
@@ -71,5 +76,6 @@ public:
     StripeProcess(StripeProcess&&) noexcept;
     StripeProcess& operator=(StripeProcess&&) noexcept;
 
+    void SendDestripePacket(PacketHeaders& headers_, std::vector<uint8_t>& data_, std::size_t length_);
 };
 

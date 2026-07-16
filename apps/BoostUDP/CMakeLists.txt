@@ -13,7 +13,7 @@ find_package(Boost REQUIRED COMPONENTS filesystem)
 # Include Boost headers
 #include_directories("C:\\local\\boost_1_91_0\\boost")
 
-add_executable(bUDPS bUDP-Server.cpp bStripes.cpp "FecEngine.h" "common.h" "FecEngine.cpp")
+add_executable(bUDPS bUDP-Server.cpp bStripes.cpp FecEngine.cpp "bStripes.h" "FecEngine.h" "common.h" "FecEngine.cpp" )
 
 target_include_directories(bUDPS
     PUBLIC
@@ -25,7 +25,7 @@ target_include_directories(bUDPS
 target_link_libraries(bUDPS PRIVATE Boost::headers Boost::filesystem cli_lib Threads::Threads)
 
 
-add_executable(bUDPC bUDP-Client.cpp "FecEngine.h" "common.h" "FecEngine.cpp")
+add_executable(bUDPC bUDP-Client.cpp "common.h" )
 
 target_include_directories(bUDPC
     PUBLIC
@@ -36,7 +36,7 @@ target_include_directories(bUDPC
 # Link against the Modern CMake header target
 target_link_libraries(bUDPC PRIVATE Boost::headers cli_lib)
 
-add_executable(testC test-Client.cpp "FecEngine.h" "common.h" "FecEngine.cpp")
+add_executable(testC test-Client.cpp "common.h")
 
 target_include_directories(testC
     PUBLIC
@@ -47,7 +47,7 @@ target_include_directories(testC
 # Link against the Modern CMake header target
 target_link_libraries(testC PRIVATE Boost::headers cli_lib)
 
-add_executable(testS test-Server.cpp "FecEngine.h" "common.h" "FecEngine.cpp")
+add_executable(testS test-Server.cpp "common.h")
 
 target_include_directories(testS
     PUBLIC

@@ -246,6 +246,7 @@ int main(int argc, char* argv[]) {
         LOG(LoggerVerbosity::DEBUG, "Striper Configuration Disabled");
 	}
 
+
     // Start WATCHDOG thread to monitor and adjust FEC stripes
     ThreadManager& TM = ThreadManager::GetInstance();
     Watchdog& watchdog = Watchdog::GetInstance();
@@ -355,7 +356,7 @@ int main(int argc, char* argv[]) {
                 short port = static_cast<short>(std::stoi(ServerPort));
                 UdpServer server(io_context, port, UdpStriperPortE::NOTSET,OutDir, stripesMgr, StriperMode);
 
-                std::cout << "\nUDP Server running on port " << ServerPort << "..." << std::endl;
+                std::cout << "\n\n\nUDP Server running on port " << ServerPort << "..." << std::endl;
                 watchdog.SetOnTimeoutCallback([&server]() {
                     LOG(LoggerVerbosity::CRITICAL, "Watchdog timeout callback invoked. Performing cleanup before exit.");
                     // Perform any necessary cleanup here

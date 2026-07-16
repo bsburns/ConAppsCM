@@ -154,8 +154,11 @@ public:
     void CheckBlock();
 };
 
+class StripeProcess; // Forward declaration
+
 class SMPTE_FEC_Engine {
 public:
+    StripeProcess* owning_process = nullptr;
     std::string owning_stripe_name;
     uint16_t stripe_num;
     StriperModeE mode;
@@ -188,10 +191,11 @@ public:
     StatisticsCodedRTM<uint64_t, FecEngineDropCodesE> StatsDropPackets;
 
 public:
-    SMPTE_FEC_Engine(std::string owning_stripe_name_, uint16_t stripe_num, StriperModeE mode_, AllStriperConfig* striper_config_);
+    SMPTE_FEC_Engine(StripeProcess* owning_, std::string owning_stripe_name_, uint16_t stripe_num, StriperModeE mode_, AllStriperConfig* striper_config_);
 
     int PerformFEC(PacketHeaders& headers, std::vector<uint8_t>& data, std::size_t length, bool fill = false);
     int ReceivePacket(PacketHeaders& headers, std::vector<uint8_t>& data, std::size_t length);
+    void SendDataPacket(std::vector<uint8_t>& data, std::size_t length);
 };
 
 

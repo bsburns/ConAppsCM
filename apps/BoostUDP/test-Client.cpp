@@ -95,7 +95,7 @@ int main(int argc, char* argv[]) {
         }, "testC.log", typeid(std::string)),
         CLP_Command("server_port, p", "Specifies UDP Destination Port number of server", [&ServerPort](const std::string& argument) {
             ServerPort = argument;
-        }, "8080", typeid(std::string)),
+        }, "7000", typeid(std::string)),
         CLP_Command("source_port, a", "Specifies UDP Source Port number of this client", [&SourcePort](const std::string& argument) {
             SourcePort = argument;
         }, "100", typeid(std::string)),
@@ -141,7 +141,7 @@ int main(int argc, char* argv[]) {
                 std::cerr << "\nInvalid bit Rate: Rate cannot be negative!! rate=" << bit_rate << ".\n";
                 exit(10);
             }
-        }, "10", typeid(double)),
+        }, "10e3", typeid(double)),
         CLP_Command("min_pkt_size, c", "Minimum Packet size in bytes", [&min_pkt_size](const std::string& argument) {
             try {
                 min_pkt_size = std::stoi(argument);
