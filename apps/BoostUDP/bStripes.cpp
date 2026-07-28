@@ -246,18 +246,61 @@ public:
             std::string SharedDataStrDestripe = "SharedData" + std::string(magic_enum::enum_name(mode)) + "-Destripe";
             std::string destripe_shm_name = shm_name + "-Destripe";
             shared_memory_object::remove(destripe_shm_name.c_str());
-            LOG(LoggerVerbosity::INFO, "Creating shared memory segment for destriper: " + destripe_shm_name 
-                + " of size: " + std::to_string(shm_size) 
+            LOG(LoggerVerbosity::INFO, "Creating shared memory segment for destriper: " + destripe_shm_name
+                + " of size: " + std::to_string(shm_size)
                 + " SharedDataStr=" + SharedDataStrDestripe);
             destripe_segment = std::make_unique<boost::interprocess::managed_shared_memory>(
                 boost::interprocess::create_only, destripe_shm_name.c_str(), shm_size);
-
             destripe_shared_data = destripe_segment->construct<StripeSharedData>(SharedDataStrDestripe.c_str())(destripe_segment->get_segment_manager());
 
-            ThreadManager& TM = ThreadManager::GetInstance();
-            TM.StartThread("MonitorDestripeDeque", [this, &TM, &SharedDataStrDestripe]() 
-                {
+        }
+    }
+
+    // Non-copyable
+    StripeProcessManager(const StripeProcessManager&) = delete;
+    StripeProcessManager& operator=(const StripeProcessManager&) = delete;
+
+    // Movable
+    StripeProcessManager(StripeProcessManager&& other) noexcept
+        : shm_name(std::move(other.shm_name))
+        , shm_size(other.shm_size)
+        , segment(std::move(other.segment))
+        //, stripe_deque(other.stripe_deque)
+        , stripe_process(std::move(other.stripe_process))
+        , shared_data(other.shared_data)
+        , destripe_segment(std::move(other.destripe_segment))
+        , destripe_shared_data(other.destripe_shared_data)
+    {
+        other.shared_data = nullptr;
+        other.shm_size = 0;
+    }
+
+    StripeProcessManager& operator=(StripeProcessManager&& other) noexcept {
+        if (this != &other) {
+            shm_name = std::move(other.shm_name);
+            shm_size = other.shm_size;
+            segment = std::move(other.segment);
+            //stripe_deque = other.stripe_deque;
+            stripe_process = std::move(other.stripe_process);
+            shared_data = other.shared_data;
+
+            //other.stripe_deque = nullptr;
+            other.shared_data = nullptr;
+            other.shm_size = 0;
+        }
+        return *this;
+    }
+
+    void startStripeProcess(const std::string& process_invocation_str) {
+        stripe_process = bp::v1::child(process_invocation_str);
+
+#if 0
+        ThreadManager& TM = ThreadManager::GetInstance();
+
+        TM.StartThread("MonitorDestripeDeque", [this, &TM]()
+            {
                 Watchdog& watchdog = Watchdog::GetInstance();
+
 
                 LOG(LoggerVerbosity::INFO, "SPM: Starting DeStripe Process Dequeue Monitor Thread");
                 // Read and pop elements from the deque
@@ -301,7 +344,7 @@ public:
                                     udpHdr = std::make_shared<PacketHeaderUDP>(header_vec);
                                     hdr = udpHdr;
                                 }
-                                  break;
+                                break;
                                 default:
                                     LOG(LoggerVerbosity::ERR, "SPM: Unknown header type in shared memory: " + std::string(magic_enum::enum_name(shmHdr.htype)));
                                     break;
@@ -360,46 +403,9 @@ public:
                     }
                 }
                 LOG(LoggerVerbosity::CRITICAL, "SPM: Exiting DeStripe Process Dequeue Monitor Thread");
-                }
-                );
-        }
-    }
-
-    // Non-copyable
-    StripeProcessManager(const StripeProcessManager&) = delete;
-    StripeProcessManager& operator=(const StripeProcessManager&) = delete;
-
-    // Movable
-    StripeProcessManager(StripeProcessManager&& other) noexcept
-        : shm_name(std::move(other.shm_name))
-        , shm_size(other.shm_size)
-        , segment(std::move(other.segment))
-        //, stripe_deque(other.stripe_deque)
-        , stripe_process(std::move(other.stripe_process))
-        , shared_data(other.shared_data)
-    {
-        other.shared_data = nullptr;
-        other.shm_size = 0;
-    }
-
-    StripeProcessManager& operator=(StripeProcessManager&& other) noexcept {
-        if (this != &other) {
-            shm_name = std::move(other.shm_name);
-            shm_size = other.shm_size;
-            segment = std::move(other.segment);
-            //stripe_deque = other.stripe_deque;
-            stripe_process = std::move(other.stripe_process);
-            shared_data = other.shared_data;
-
-            //other.stripe_deque = nullptr;
-            other.shared_data = nullptr;
-            other.shm_size = 0;
-        }
-        return *this;
-    }
-
-    void startStripeProcess(const std::string& process_invocation_str) {
-        stripe_process = bp::v1::child(process_invocation_str);
+            }
+        );
+#endif
     }
 
     void SendMessage(std::string message) {
@@ -513,8 +519,8 @@ public:
 
             try {
                 StripeProcessManager spm(process_name.c_str(), SHM_DEQUE_SIZE, mode, striperConfig); // 64KB shared memory for each stripe
-                spm.startStripeProcess(process_path + stripe_args);
                 stripe_processors.emplace_back(std::move(spm));
+                spm.startStripeProcess(process_path + stripe_args);
             }
             catch (const std::exception& e) {
                 LOG(LoggerVerbosity::CRITICAL, "ISSPM: Failed to start Stripe Process: " + process_name + ". Error: " + e.what());
@@ -703,6 +709,7 @@ StripeProcess::StripeProcess(std::string name_, uint16_t stripe_num_, StriperMod
                 + " seg_name=" + SharedDataStrDestripe
             );
             DestripeData = res.first;
+            SendDestripeMessage("Hello from stripe= " + name);
         }
     }
     ThreadManager& TM = ThreadManager::GetInstance();
@@ -828,7 +835,6 @@ void StripeProcess::ReceivedPacket(PacketHeaders& headers, std::vector<uint8_t>&
 }
 
 
-// Define missing member to resolve LNK2019
 void StripeProcess::SendDestripePacket(PacketHeaders& headers, std::vector<uint8_t>& data, std::size_t length)
 {
     // Place packet SHM Destripe Deque
@@ -852,6 +858,28 @@ void StripeProcess::SendDestripePacket(PacketHeaders& headers, std::vector<uint8
     std::stringstream ss;
     ss << msg;
     LOG(LoggerVerbosity::INFO, "SP: Created SHM Packet:" + ss.str());
+
+    // Place Packet on Shared Deque
+    DestripeData->mutex.lock();
+    DestripeData->stripe_deque.push_back(msg);
+    DestripeData->mutex.unlock();
+    DestripeData->cond_nonempty.notify_one();
+}
+
+void StripeProcess::SendDestripeMessage(std::string message)
+{
+    // Place packet SHM Destripe Deque
+    allocator<uint8_t, SegmentManager> byteAlloc(destripe_segment.get_segment_manager());
+    StripeShmDequeMessage msg(byteAlloc);
+    msg.msg_type = DeqMsgType::MESSAGE;
+
+
+    msg.msg_length = message.size();
+    for (uint8_t i = 0; i < msg.msg_length; ++i) {
+        msg.data.push_back(message[i]);
+    }
+    std::stringstream ss;
+    LOG(LoggerVerbosity::INFO, "SP: Sending Message: " + message);
 
     // Place Packet on Shared Deque
     DestripeData->mutex.lock();

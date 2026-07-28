@@ -9,6 +9,7 @@
  *------------------------------------------------------------------
  */
 
+
 enum class StriperModeE : int {
     NOTSET = 0,
     TRANSMITTER = 1,

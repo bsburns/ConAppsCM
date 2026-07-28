@@ -77,5 +77,6 @@ public:
     StripeProcess& operator=(StripeProcess&&) noexcept;
 
     void SendDestripePacket(PacketHeaders& headers_, std::vector<uint8_t>& data_, std::size_t length_);
+    void SendDestripeMessage(std::string message);
 };
 

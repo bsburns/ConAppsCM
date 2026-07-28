@@ -276,6 +276,7 @@ int main(int argc, char* argv[]) {
 
         Debugger debug;
         debug.Launch(WaitDebugAttachIterations);
+        LOG(LoggerVerbosity::CRITICAL, "Exit Degug wait - process=" + StripeProcessName);
 
         // Get Stripe number from stripe name
         auto pos = StripeProcessName.find("-", 0);

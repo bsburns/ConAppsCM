@@ -1,4 +1,7 @@
 
+
+set(BACKOUT_COMMIT_73101f4 ON)
+
 # Find the Boost package (headers are implicitly required)
 if (WIN32)
     set(Boost_USE_STATIC_LIBS ON)
@@ -13,7 +16,12 @@ find_package(Boost REQUIRED COMPONENTS filesystem)
 # Include Boost headers
 #include_directories("C:\\local\\boost_1_91_0\\boost")
 
-add_executable(bUDPS bUDP-Server.cpp bStripes.cpp FecEngine.cpp "bStripes.h" "FecEngine.h" "common.h" "FecEngine.cpp" )
+message(STATUS "BACKOUT_COMMIT_73101f4=${BACKOUT_COMMIT_73101f4}")
+#if (BACKOUT_COMMIT_73101f4)
+#    add_executable(bUDPS bUDP-Server.cpp bStripes.cpp "FecEngine.h" "common.h" "FecEngine.cpp")
+#else()
+    add_executable(bUDPS bUDP-Server.cpp bStripes.cpp FecEngine.cpp "bStripes.h" "FecEngine.h" "common.h" "FecEngine.cpp" )
+#endif()
 
 target_include_directories(bUDPS
     PUBLIC
