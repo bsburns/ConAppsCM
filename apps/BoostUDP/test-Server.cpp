@@ -364,7 +364,6 @@ int main(int argc, char* argv[]) {
     TM.StartThread("WatchdogMonitor", Watchdog::monitor_thread);
 
     // Start CLI input thread
-
     auto& CMP = CliMenuProcessor::GetInstance();
     CMP.SetPrompt("TestStripeSvr> ");
     CMP.AddSubMenu(LOG_INST.cli_menu);

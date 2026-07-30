@@ -109,6 +109,9 @@ public:
 	void AddSubMenu(const MenuItem& newMenu) {
 		rootMenu.AddSubMenu(newMenu);
 	}
+	void DynamicAddSubMenu(std::vector<std::string> cmdHierarchy, const MenuItem& newMenu) {
+		rootMenu.DynamicAddSubMenu(cmdHierarchy, newMenu);
+	}
 
 	static void GetUserInput_thread();
 	void ProcessChar(unsigned char ch);

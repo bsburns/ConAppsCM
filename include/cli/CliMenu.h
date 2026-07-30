@@ -88,7 +88,21 @@ public:
 	//MenuItemNew() {}
 
 	void AddSubMenu(const MenuItem& new_submenu) {
-		subMenus.push_back(new_submenu);
+		subMenus.emplace_back(new_submenu);
+	}
+	
+	void DynamicAddSubMenu(std::vector<std::string> cmdHierarchy, const MenuItem& new_submenu) {
+		std::vector<std::string> popFirst(cmdHierarchy.begin() + 1, cmdHierarchy.end());
+		for (auto& sub : subMenus) {
+			if (sub.name.starts_with(cmdHierarchy[0])) {
+				if (cmdHierarchy.size() == 1) {
+					// Found last submenu
+					sub.AddSubMenu(new_submenu);
+				} else {
+					sub.DynamicAddSubMenu(popFirst, new_submenu);
+				}
+			}
+		}
 	}
 
 	void ProcessCommand(const std::string& command) {
