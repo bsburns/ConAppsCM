@@ -22,6 +22,91 @@
 
 using namespace my_logger;
 
+// Inline functions
+template <typename T>
+void serialize16(std::vector<uint8_t>& data, int offset, T value) {
+	data[offset++] = (value >> 8) & 0xFF;
+	data[offset] = value & 0xFF;
+}
+template <typename T>
+void serialize32(std::vector<uint8_t>& data, int offset, T value) {
+	data[offset++] = (value >> 24) & 0xFF;
+	data[offset++] = (value >> 16) & 0xFF;
+	data[offset++] = (value >> 8) & 0xFF;
+	data[offset] = value & 0xFF;
+}
+template <typename T>
+void serialize64(std::vector<uint8_t>& data, int offset, T value) {
+	data[offset++] = (value >> 56) & 0xFF;
+	data[offset++] = (value >> 48) & 0xFF;
+	data[offset++] = (value >> 40) & 0xFF;
+	data[offset++] = (value >> 32) & 0xFF;
+	data[offset++] = (value >> 24) & 0xFF;
+	data[offset++] = (value >> 16) & 0xFF;
+	data[offset++] = (value >> 8) & 0xFF;
+	data[offset] = value & 0xFF;
+}
+inline void serializeFloat(std::vector<uint8_t>& data, int offset, float value) {
+	std::array<uint8_t, 4> fByteArray = std::bit_cast<std::array<uint8_t, 4>>(value);
+	data[offset++] = fByteArray[0];
+	data[offset++] = fByteArray[1];
+	data[offset++] = fByteArray[2];
+	data[offset] = fByteArray[3];
+}
+inline void serializeDouble(std::vector<uint8_t>& data, int offset, double value) {
+	std::array<uint8_t, 8> fByteArray = std::bit_cast<std::array<uint8_t, 8>>(value);
+	data[offset++] = fByteArray[0];
+	data[offset++] = fByteArray[1];
+	data[offset++] = fByteArray[2];
+	data[offset++] = fByteArray[3];
+	data[offset++] = fByteArray[4];
+	data[offset++] = fByteArray[5];
+	data[offset++] = fByteArray[6];
+	data[offset] = fByteArray[7];
+}
+
+template <typename T>
+T deserialize16(const std::vector<uint8_t>& data, int offset) {
+	return (static_cast<T>(data[offset]) << 8) | static_cast<T>(data[offset + 1]);
+}
+
+template <typename T>
+T deserialize32(const std::vector<uint8_t>& data, int offset) {
+	return (static_cast<T>(data[offset]) << 24) |
+		(static_cast<T>(data[offset + 1]) << 16) |
+		(static_cast<T>(data[offset + 2]) << 8) |
+		static_cast<T>(data[offset + 3]);
+}
+template <typename T>
+T deserialize64(const std::vector<uint8_t>& data, int offset) {
+	return (static_cast<T>(data[offset]) << 56) | (static_cast<T>(data[offset + 1]) << 48)
+		| (static_cast<T>(data[offset + 2]) << 40) | (static_cast<T>(data[offset + 3]) << 32)
+		| (static_cast<T>(data[offset + 4]) << 24) | (static_cast<T>(data[offset + 5]) << 16)
+		| (static_cast<T>(data[offset + 6]) << 8) | static_cast<T>(data[offset + 7]);
+}
+
+inline float deserializeFloat(const std::vector<uint8_t>& data, int offset) {
+	std::array<uint8_t, 4> fByteArray;
+	fByteArray[0] = data[offset];
+	fByteArray[1] = data[offset + 1];
+	fByteArray[2] = data[offset + 2];
+	fByteArray[3] = data[offset + 3];
+	return std::bit_cast<float>(fByteArray);
+}
+
+inline double deserializeDouble(const std::vector<uint8_t>& data, int offset) {
+	std::array<uint8_t, 8> dByteArray;
+	dByteArray[0] = data[offset];
+	dByteArray[1] = data[offset + 1];
+	dByteArray[2] = data[offset + 2];
+	dByteArray[3] = data[offset + 3];
+	dByteArray[4] = data[offset + 4];
+	dByteArray[5] = data[offset + 5];
+	dByteArray[6] = data[offset + 6];
+	dByteArray[7] = data[offset + 7];
+	return std::bit_cast<double>(dByteArray);
+}
+
 enum class PacketHeaderType : uint8_t {
     // Define your packet header types here
 	NOTSET = 0,
@@ -491,9 +576,19 @@ public:
 class PacketHeaderStripeTest : public PacketHeaderBase {
 public:
 	const uint32_t magic_value = 0xDEADBEEF;
-	uint32_t sequence_num;
+	uint64_t sequence_num;
+	uint64_t timestamp;
 	uint16_t length;
+	uint8_t  command;
 	uint8_t  pattern;
+
+	enum class Command : uint8_t {
+		START = 0,
+		STOP = 1,
+		PAUSE = 2,
+		RESUME = 3,
+		NOMINAL = 4
+	};
 
 	PacketHeaderStripeTest() {
 		header_type = PacketHeaderType::STRIPE_TEST;
@@ -507,24 +602,20 @@ public:
 
 	void Reset() override {
 		sequence_num = 0;
+		timestamp = 0;
 		length = 0;
+		command = 0;
 		pattern = 0xA5;
 	}
 
 	std::vector<uint8_t> serialize() const override {
 		std::vector<uint8_t> data(Size()); // StripeHeader header is 7 bytes
-		data[0] = magic_value >> 24;
-		data[1] = (magic_value >> 16) & 0xFF;
-		data[2] = (magic_value >> 8) & 0XFF;
-		data[3] = magic_value & 0xFF;
-		data[4] = magic_value >> 24;
-		data[5] = (sequence_num >> 16) & 0xFF;
-		data[6] = (sequence_num >> 8) & 0XFF;
-		data[7] = sequence_num & 0xFF;
-		data[8] = length >> 8;
-		data[9] = length & 0xFF;
-		data[10] = pattern;
-
+		serialize32(data, 0, magic_value);
+		serialize64(data, 4, sequence_num);
+		serialize64(data, 12, timestamp);
+		serialize16(data, 20, length);
+		data[22] = command;
+		data[23] = pattern;
 		return data;
 	}
 
@@ -532,24 +623,29 @@ public:
 		if (data.size() < Size()) {
 			throw std::invalid_argument("Data too short for SMPTE header");
 		}
-		auto read_magic = (data[0] << 24) | (data[1] << 16) | (data[2] << 8) | data[3];
+		uint32_t read_magic = deserialize32<uint32_t>(data, 0);
 		if (read_magic != magic_value) {
 			LOG(LoggerVerbosity::ERR, "StripeTestHeader: deserialize: magic values do not match!! read_value=" + std::to_string(read_magic));
 		}
-		sequence_num = (data[4] << 24) | (data[5] << 16) | (data[6] << 8) | data[7];
-		length = (data[8] << 8) | data[9];
-		pattern = data[10];
+		sequence_num = deserialize64<uint64_t>(data, 4);
+		timestamp = deserialize64<uint64_t>(data, 12);
+		length = deserialize16<uint16_t>(data, 20);
+		command = data[22];
+		pattern = data[23];
 	}
 
-	uint32_t Size() const override { return 11; }
+	uint32_t Size() const override { return 24; }
 
 	std::string to_string() const override {
 		std::string str = "StripeTest={";
 		str += "seq=" + std::to_string(sequence_num);
+		str += ", ts=" + std::to_string(timestamp);
 		str += ", len=" + std::to_string(length);
 		std::ostringstream pat;
 		pat << "0x" << std::hex << std::uppercase << (int)pattern;
 		str += ", pat=" + pat.str();
+		auto eCmd = magic_enum::enum_cast<Command>(command).value();
+		str += ", cmd=" + std::string(magic_enum::enum_name(eCmd));
 		str += "}";
 		return str;
 	}

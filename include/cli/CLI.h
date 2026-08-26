@@ -9,9 +9,12 @@
  *------------------------------------------------------------------
  */
 #include <atomic>
+#include <filesystem>
 
 #include "utilities/logger.h"
 #include "utilities/watchdog.h"
+
+namespace fs = std::filesystem;
 
  // CliMenuProcessor class handles user input from the command line, maintains command history, and interacts with the MenuItem structure to execute commands based on user input.
  // Singleton class, only one instance should be created with reference to the root menu and prompt string.
@@ -19,7 +22,7 @@ class CliMenuProcessor {
 private:
 	CliMenuProcessor() {
 		// Read previous command history from file
-		util::loadListFromFile(commandHistory, ".command_history");
+		//util::loadListFromFile(commandHistory, commandHistoryFile.string());
 		itCmdHistory = commandHistory.begin();
 	}
 
@@ -28,6 +31,8 @@ private:
 	std::list<std::string> commandHistory;
 	std::list<std::string>::iterator itCmdHistory;
 	std::string commandBuffer;
+	fs::path commandHistoryFile = "";
+	bool commandHistoryLoaded = false;
 	int currentCursorPosition = 0;
 
 	MenuItem rootMenu =
@@ -96,8 +101,47 @@ private:
 	void updateCommandHistory(const std::string& command);
 
 public:
-	static CliMenuProcessor& GetInstance() {
+	static CliMenuProcessor& GetInstance(std::string history_file = "") {
 		static CliMenuProcessor instance; // Guaranteed to be destroyed and instantiated on first use.
+	
+		if (!instance.commandHistoryLoaded) {
+			if (history_file.empty() && instance.commandHistoryFile.string().empty()) {
+				history_file = ".default_command_history";
+			}
+			// Convert history_file to fs::path
+			fs::path history_path(history_file);
+			if (!history_path.has_parent_path() || history_path.parent_path().empty()) {
+				// No path applied, save to current directory
+				fs::path hpath = fs::current_path() / ".history";
+				if (!std::filesystem::is_directory(hpath)) {
+					std::filesystem::create_directory(hpath);
+				}
+				history_path = hpath / history_path;
+			}
+			if (instance.commandHistoryFile != history_path) {
+				if (std::filesystem::exists(history_path)) {
+					std::cout << "\nLoading command history from file: " << history_path << std::endl;
+				}
+				else {
+					std::cout << "\nCommand history file does not exist: " << history_path << std::endl;
+					std::cout << "Creating new command history file: " << history_path << std::endl;
+					std::ofstream outfile(history_path);
+					if (!outfile) {
+						std::cerr << "\n\nError creating command history file: " << history_path << std::endl;
+					}
+					else {
+						outfile << "# Command history file created on " << std::chrono::system_clock::now() << "\n";
+						outfile.close();
+					}
+				}
+				instance.commandHistoryFile = history_path;
+			}
+
+			// Load command history from the specified file
+			util::loadListFromFile(instance.commandHistory, history_path.string());
+			instance.itCmdHistory = instance.commandHistory.begin();
+			instance.commandHistoryLoaded = true;
+		}
 		return instance;
 	}
 

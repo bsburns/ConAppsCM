@@ -22,6 +22,8 @@
 #include "magic_enum.hpp"
 #include "cli/CliMenu.h"
 
+namespace fs = std::filesystem;
+
 #define LOG_INST my_logger::MyLogger::GetInstance()
 #define LOG(v,m) if (v >= LOG_INST.verbosity) LOG_INST.Log(v,(m))
 
@@ -63,7 +65,7 @@ enum class LoggerVerbosity : int {
 		}
 	public:
 		LoggerVerbosity verbosity = LoggerVerbosity::ERR;
-		std::string	log_filename;
+		fs::path      log_filename;
 		std::ofstream log_file;
 		const MenuItem cli_menu = {
 			.name = "logger",
@@ -188,9 +190,14 @@ enum class LoggerVerbosity : int {
 		}
 
 		int SetLogFile(const std::string& fn) {
-			std::string filename = fn;
-			if (filename.find('/') == std::string::npos) { // No path applied, save to current directory
-				filename = "./" + filename;
+			fs::path filename = fn;
+			if (!(filename.has_parent_path() && filename.parent_path().empty())) { // No path applied, save to current directory
+				fs::path log_path = fs::current_path();
+				log_path /= ".logs";
+				if (!std::filesystem::is_directory(log_path)) {
+					std::filesystem::create_directory(log_path);
+				}
+				filename = log_path / filename;
 			}
 
 			if (filename == log_filename) return 0; // nothing to do as it is the same file
@@ -203,8 +210,9 @@ enum class LoggerVerbosity : int {
 			}
 			log_filename = filename;
 			lock.unlock();
-			Log(LoggerVerbosity::DEBUG, std::format("Opening log file={} v={}", log_filename, 
-				std::string(magic_enum::enum_name(verbosity))));
+			std::ostringstream oss;
+			oss << "Opening log file=" << log_filename << " v=" << std::string(magic_enum::enum_name(verbosity));
+			Log(LoggerVerbosity::DEBUG, oss.str());
 			return 0;
 		}
 
@@ -212,7 +220,9 @@ enum class LoggerVerbosity : int {
 			std::unique_lock<std::mutex> lock(mtx);
 			if (log_file.is_open()) {
 				lock.unlock();
-				Log(LoggerVerbosity::DEBUG, std::format("Closing log file={}", log_filename));
+				std::ostringstream oss;
+				oss << "Closing log file=" << log_filename;
+				Log(LoggerVerbosity::DEBUG, oss.str());
 				lock.lock();
 				log_file.flush();
 				log_file.close();

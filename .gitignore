@@ -19,6 +19,8 @@ x64/
 [Oo]bj/
 [Oo]ut/
 [Bb]uild/
+.[Ll]ogs/
+.[Hh]istory/
 
 # MSTest test Results
 [Tt]est[Rr]esult*/

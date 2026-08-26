@@ -49,14 +49,18 @@ inline std::vector<std::string> splitBySpace(const std::string &input)
 inline bool saveListToFile(const std::list<std::string>& data, const std::string& filename) {
     std::ofstream outFile(filename);
     if (!outFile.is_open()) {
-        std::cerr << "Error: Could not open file for writing: " << filename << "\n";
+        std::cerr << "\nError: "
+            << __FILE__ << ":" << __LINE__
+            << " - Could not open file for writing: " << filename << "\n";
         return false;
     }
 
     for (const auto& item : data) {
         outFile << item << "\n";
         if (!outFile) { // Check for write errors
-            std::cerr << "Error: Failed to write to file.\n";
+            std::cerr << "\nError: "
+                << __FILE__ << ":" << __LINE__
+                << " - Failed to write to file.\n";
             return false;
         }
     }
@@ -68,7 +72,9 @@ inline bool saveListToFile(const std::list<std::string>& data, const std::string
 inline bool loadListFromFile(std::list<std::string>& data, const std::string& filename) {
     std::ifstream inFile(filename);
     if (!inFile.is_open()) {
-        std::cerr << "Error: Could not open file for reading: " << filename << "\n";
+        std::cerr << "\nError: "
+			<< __FILE__ << ":" << __LINE__ 
+            << " - Could not open file for reading: \"" << filename << "\"\n";
         return false;
     }
 
@@ -79,7 +85,9 @@ inline bool loadListFromFile(std::list<std::string>& data, const std::string& fi
     }
 
     if (inFile.bad()) { // Check for read errors
-        std::cerr << "Error: Failed to read from file.\n";
+        std::cerr << "Error: "
+			<< __FILE__ << ":" << __LINE__ 
+            << " - Failed to read from file: " << filename << "\n";
         return false;
     }
 
