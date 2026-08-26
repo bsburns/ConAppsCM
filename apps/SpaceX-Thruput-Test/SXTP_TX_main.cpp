@@ -317,6 +317,7 @@ public:
 class PacketGenerator {
 public:
     uint64_t NumPackets = 1;
+	double RunTime = 0; // seconds, 0 means run until NumPackets sent
     double PacketRate = 1.0; // packets per second
     uint32_t PacketSize = 1024; // bytes
 	uint64_t SkipInterval = 0; // Skip every N packets
@@ -324,6 +325,9 @@ public:
 
     // Statistics
     StatisticsRTM<uint64_t> StatsTxPackets;
+    StatisticsBasic<double> StatsSleepTime;
+    StatisticsBasic<double> StatsBurstTime;
+    StatisticsBasic<double> StatsPktTime;
 
 	// Working variables
 	std::vector<uint8_t> pkt_buffer;
@@ -331,6 +335,9 @@ public:
 
     PacketGenerator() 
 		: StatsTxPackets("TxPackets", nullptr, 1.0, false)
+		, StatsSleepTime("SleepTime", nullptr)
+		, StatsBurstTime("BurstTime", nullptr)
+		, StatsPktTime("PktTime", nullptr)
     {}
 
     void Start(TestUdpClient& client) {
@@ -341,23 +348,32 @@ public:
         Watchdog& watchdog = Watchdog::GetInstance();
 
         ConfigurePktBfr(pattern);
+
+		//pkt_buffer[48] = 0xAA; // Just for testing, set a specific byte in the packet buffer
         pkt_header.length = PacketSize - pkt_header.Size();
         pkt_header.command = (uint8_t) PacketHeaderStripeTest::Command::START;
 
+        if (RunTime > 0) {
+            if (NumPackets > 0) {
+                LOG(LoggerVerbosity::WARNING, "PacketGenerator: Both RunTime and NumPackets are set. RunTime will take precedence.");
+			}
+            NumPackets = (uint64_t)(RunTime * PacketRate);
+		}
         double packet_burst_interval = 0;
-		double target_burst_interval = 0.08;
+		double target_burst_interval = 0.1;
         uint32_t burst_size = 500;
         double pkt_tx_time = 1.0 / PacketRate; // seconds
         if (PacketRate > 0) {
 			burst_size = std::max<uint32_t>(1, (uint32_t)(PacketRate * target_burst_interval));
 			packet_burst_interval = pkt_tx_time * burst_size; // seconds for burst
-            packet_burst_interval *= 1.7; // magic factor to make rate work
+            //packet_burst_interval *= 1.7; // magic factor to make rate work
         }
         double skip_interval = pkt_tx_time * SkipCount;
 
         std::cout << "\nStarting Packet Generator: " << ConfigString() 
 			<< " | Burst Interval: " << packet_burst_interval << " seconds"
             << " | Burst Size: " << burst_size << " packets"
+			<< " | Run Time: " << RunTime << " seconds"
             << std::endl;
 
         std::chrono::steady_clock::time_point start_time = std::chrono::steady_clock::now();
@@ -366,6 +382,7 @@ public:
         while (!TM.force_stop
             && (NumPackets == 0 || StatsTxPackets.count() < NumPackets))
         {
+            std::chrono::steady_clock::time_point start_loop_time = std::chrono::steady_clock::now();
             if (SkipInterval != 0 && SkipCount != 0) {
                 auto skip_condition = sequence % SkipInterval;
                 if (skip_condition == 0 && sequence != 0) {
@@ -397,30 +414,52 @@ public:
                     << " | TXbps: " << to_engineering(StatsTxPackets.periodUnitRate() * 8)
                     << std::flush;
                 last_output_time = curr_time;
+
+				// Adjust burst interval based on actual TX rate
+                double actual_tx_rate = StatsTxPackets.periodCountRate();
+                if (actual_tx_rate > 0) {
+                    double rate_ratio = actual_tx_rate / PacketRate;
+                    if (rate_ratio > 0) {
+                        packet_burst_interval -= (1-rate_ratio)*packet_burst_interval/10;
+						//std::cout << "\nratio=" << rate_ratio << " rate=" << actual_tx_rate << " burst_iv = " << packet_burst_interval << std::flush;
+						//LOG(LoggerVerbosity::INFO, "PacketGenerator: Adjusted burst interval to " + std::to_string(packet_burst_interval) + " seconds based on actual TX rate of " + std::to_string(actual_tx_rate) + " pps  ratio=" + std::to_string(rate_ratio));
+                    }
+				}
             }
+
+            std::chrono::steady_clock::time_point end_time = std::chrono::steady_clock::now();
+            std::chrono::duration<double> pkt_time = end_time - start_loop_time;
+            StatsPktTime.addValue(pkt_time.count());
 
             if (packet_burst_interval != 0 && StatsTxPackets.count() % burst_size == 0) {
                 watchdog.CheckIn();
 
+                curr_time = std::chrono::steady_clock::now();
                 std::chrono::duration<double> elapsed = curr_time - last_burst_time;
-				last_burst_time = curr_time;
                 auto sleep_duration = std::chrono::duration<double>(packet_burst_interval - elapsed.count());
-                if (sequence % 1000 == 0) {
-                    LOG(LoggerVerbosity::DEBUG, "PacketGenerator: Sent packet sequence=" + std::to_string(pkt_header.sequence_num)
-                        + " sleep_for=" + std::to_string(sleep_duration.count())
-                        + " elapsed output=" + std::to_string(elapsed_output.count()) + " sec"
-                    );
+                if (sleep_duration.count() < 0) {
+                    sleep_duration = std::chrono::duration<double>(0);
 				}
-                std::this_thread::sleep_for(std::chrono::duration<double>(packet_burst_interval - elapsed.count()));
-                //std::this_thread::sleep_for(std::chrono::duration<double>(0.00001));
+                StatsSleepTime.addValue(sleep_duration.count());
+                StatsBurstTime.addValue(elapsed.count());
+                std::this_thread::sleep_for(sleep_duration);
+				last_burst_time = std::chrono::steady_clock::now();
             }
         }
+        
+        std::chrono::duration<double> elapsed = std::chrono::steady_clock::now() - start_time;
+		double overall_rate = StatsTxPackets.count() / elapsed.count();
 
-        std::cout << "\nFINAL: Packets Sent: " << StatsTxPackets.count() << " / " << NumPackets
+        std::cout << "\n\nFINAL: Packets Sent: " << StatsTxPackets.count() << " / " << NumPackets
             << " | Total Bytes: " << StatsTxPackets.sum()
             << " | TXpps: " << to_engineering(StatsTxPackets.periodCountRate()) 
             << " | TXbps: " << to_engineering(StatsTxPackets.periodUnitRate()*8)
             << std::flush;
+
+		std::cout << "\nSleep Time Stats: " << StatsSleepTime.ToString();
+		std::cout << "\nBurst Time Stats: " << StatsBurstTime.ToString();
+		std::cout << "\nPacket Time Stats: " << StatsPktTime.ToString();
+        std::cout << "\nElapsed Time: " << elapsed.count() << " seconds  Overall Rate=" << overall_rate << "\n";
     }
 
     void ConfigurePktBfr(uint8_t pattern) {
@@ -500,7 +539,7 @@ int main(int argc, char* argv[]) {
                 exit(10);
             }
 			PG.NumPackets = static_cast<uint64_t>(num_packets_double);
-        }, "1", typeid(uint64_t)),
+        }, "0", typeid(uint64_t)),
         CLP_Command("pkt_rate, r", "Specifies the packets rate to send at", [&PG](const std::string& argument) {
             try {
                 PG.PacketRate = std::stod(argument);
@@ -510,6 +549,15 @@ int main(int argc, char* argv[]) {
                 PG.PacketRate = 1.0;
             }
         }, "1", typeid(double)),
+        CLP_Command("run_time, x", "Specifies the time (seconds) to run for", [&PG](const std::string& argument) {
+            try {
+                PG.RunTime = std::stod(argument);
+            }
+            catch (const std::exception& e) {
+                std::cerr << "Invalid run time: " << argument << ". Setting to default 0.\n";
+                PG.RunTime = 0;
+            }
+        }, "0", typeid(double)),
         CLP_Command("pkt_size, t", "Specifies the packet size to send", [&PG](const std::string& argument) {
             std::stringstream ss(argument);
             if (!(ss >> PG.PacketSize && ss.eof())) {

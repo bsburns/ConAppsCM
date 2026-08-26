@@ -115,9 +115,16 @@ public:
     }
 };
 
+struct CheckerConfiguration {
+    uint32_t ReorderWindow = 500;
+    bool no_sequence_num_check = false;
+    bool no_payload_check = false;
+};
+
 class test_udp_connection {
 public:
     std::string name;
+    CheckerConfiguration chkrCfg;
     bool validPacketStream = false;
     uint16_t srcPort = 0;
     uint32_t srcIP = 0;
@@ -142,13 +149,135 @@ public:
     uint64_t OutsideReorderWindowCount = 0;
 
     test_udp_connection() {}
-    test_udp_connection(std::string conn_name)
-        : name(conn_name)
-        , StatsRxPackets(conn_name + ":RxPkts", nullptr)
-        , StatsBadPackets(conn_name + ":BadPkts", nullptr)
-		, StatsLatency(conn_name + ":Latency", nullptr)
+    test_udp_connection(std::string conn_name_, CheckerConfiguration& checkerConfig_)
+        : name(conn_name_)
+        , chkrCfg(checkerConfig_)
+        , StatsRxPackets(conn_name_ + ":RxPkts", nullptr)
+        , StatsBadPackets(conn_name_ + ":BadPkts", nullptr)
+		, StatsLatency(conn_name_ + ":Latency", nullptr)
     {
 		last_output_time = std::chrono::system_clock::now();
+    }
+
+    int process_packet(const std::vector<uint8_t>& receive_buffer_, std::size_t length,
+        std::chrono::system_clock::time_point now, std::chrono::steady_clock::time_point nows) 
+    {
+        int rc = 0;
+        if (validPacketStream) {
+            StatsRxPackets.addValue(length);
+
+            // Extract Test Header
+            auto testHdr = std::make_shared<PacketHeaderStripeTest>(receive_buffer_);
+            length -= testHdr->Size();
+
+            LOG(LoggerVerbosity::INFO, name
+                + " - PM: Received Packet:"
+                + " length=" + std::to_string(length)
+                + " " + testHdr->to_string()
+            );
+
+            auto duration = std::chrono::microseconds(testHdr->timestamp);
+            std::chrono::time_point<std::chrono::system_clock> timestamp(duration);
+            std::chrono::duration<double> latency = now - timestamp;
+            StatsLatency.addValue(latency.count());
+
+            // Verify data
+            bool packet_error = false;
+            if (!chkrCfg.no_sequence_num_check) {
+                if (missing_rx_seq_nums.size() > 0) {
+                    // Check if this sequence number is in the missing list
+                    auto snum = missing_rx_seq_nums.begin()->first;
+                    if (snum < testHdr->sequence_num - chkrCfg.ReorderWindow) {
+                        // Missing Sequence number is outside of reorde window
+                        auto rx_time = missing_rx_seq_nums.begin()->second;
+                        missing_sequence_tracker.update_missing(snum, rx_time);
+                        missing_rx_seq_nums.erase(missing_rx_seq_nums.begin());
+                    }
+                }
+                if (expected_sequence != testHdr->sequence_num) {
+                    StatOutOfSequence++;
+                    auto it = missing_rx_seq_nums.find(testHdr->sequence_num);
+                    if (it != missing_rx_seq_nums.end()) {
+                        // Sequence # is already in missing list so rx out of oreder
+                        LOG(LoggerVerbosity::ERR, "[Seq=" + std::to_string(testHdr->sequence_num)
+                            + "]: Out of sequence: expected=" + std::to_string(expected_sequence)
+                            + ", received=" + std::to_string(testHdr->sequence_num));
+                        missing_rx_seq_nums.erase(testHdr->sequence_num);
+                        ReorderedSequenceCount++;
+                    }
+                    else {
+                        // We skipped past expected, so add to missing list and set expected
+                        auto last_rx_time = last_packet_rx_time;
+                        for (uint64_t seq = expected_sequence; seq < testHdr->sequence_num; ++seq) {
+                            missing_rx_seq_nums[seq] = last_packet_rx_time;
+                        }
+                        std::prev(missing_rx_seq_nums.end())->second = nows; // set last in sequence to current time
+                        expected_sequence = testHdr->sequence_num + 1;
+                    }
+                }
+                else {
+                    expected_sequence++;
+                }
+            }
+            if (length != testHdr->length) {
+                LOG(LoggerVerbosity::ERR, "[Seq=" + std::to_string(testHdr->sequence_num)
+                    + "]: Data length and leng mismatch: "
+                    "length=" + std::to_string(length)
+                    + ", tstHdr.length=" + std::to_string(testHdr->length)
+                    + "  Stats=" + BriefStats()
+                );
+                StatBadLength++;
+                packet_error = true;
+            }
+
+            if (!chkrCfg.no_payload_check) {
+                uint16_t err_count = 0;
+                for (size_t i = testHdr->Size(); i < testHdr->length + testHdr->Size(); ++i) {
+                    if (receive_buffer_[i] != testHdr->pattern) {
+                        err_count++;
+                    }
+                }
+                if (err_count) {
+                    LOG(LoggerVerbosity::ERR, "Data bytes do not match pattern: "
+                        "length=" + std::to_string(length)
+                        + ", pattern=" + std::to_string(testHdr->pattern)
+                        + ", error_count=" + std::to_string(err_count)
+                    );
+                    StatBadPacketData++;
+                    packet_error = true;
+                }
+            }
+            if (packet_error) {
+                StatsBadPackets.addValue(length);
+            }
+
+            auto curr_time = std::chrono::system_clock::now();
+            std::chrono::duration<double> elapsed_output = curr_time - last_output_time;
+
+            if (elapsed_output.count() > 1.0) {
+                std::cout << "\nPeriodic: "
+                    << " SEQ=" << testHdr->sequence_num << " "
+                    << BriefStats();
+                last_output_time = now;
+            }
+            auto cmd = testHdr->command;
+            if (cmd == (uint8_t)PacketHeaderStripeTest::Command::STOP) {
+                std::cout << "\n\nReceived STOP command from client: " << name 
+                    << "\nFINAL STATS:\n" << BriefStats()
+                    << "\n\tMissingSeqNum=" << missing_rx_seq_nums.size()
+                    << " (" << missing_rx_seq_nums.size() * 100.0 / expected_sequence << "%)"
+                    << "\n\tLatency: min=" << to_engineering(StatsLatency.min())
+                    << " mean=" << to_engineering(StatsLatency.mean())
+                    << " max=" << to_engineering(StatsLatency.max())
+                    << "\n\t" << missing_sequence_tracker.BriefStats()
+                    << std::endl;
+				rc = 1; // Indicate to the server that this connection should be closed
+            }
+            last_packet_rx_time = nows;
+        } else {
+            std::cout << "Unhandled Mode for endpoint " << name << std::endl;
+        }
+        return rc;
     }
 
     std::string BriefStats() const {
@@ -156,6 +285,7 @@ public:
         ss << name;
         ss << ": RXP=" << StatsRxPackets.count();
         ss << " | RXpps=" << to_engineering(StatsRxPackets.periodCountRate());
+
         ss << " | RXB=" << StatsRxPackets.sum();
         ss << " | RXbps=" << to_engineering(StatsRxPackets.periodUnitRate() * 8);
         ss << " | BADP=" << StatsBadPackets.count();
@@ -171,7 +301,7 @@ public:
 
 class TestUdpServer {
 public:
-	uint32_t ReorderWindow = 500; // Number of packets to hold for reordering
+    CheckerConfiguration chkrCfg;
     const MenuItem cli_menu =
     {
     .name = "show",
@@ -201,10 +331,10 @@ public:
     };
 
     // Bind to the given port on all available network interfaces
-    TestUdpServer(boost::asio::io_context& io_context, short port_, uint32_t reorder_win_size_)
+    TestUdpServer(boost::asio::io_context& io_context, short port_, CheckerConfiguration& checkerCfg_)
         : socket_(io_context, udp::endpoint(udp::v4(), port_))
         , port(port_)
-		, ReorderWindow(reorder_win_size_)
+		, chkrCfg(checkerCfg_)
     {
         // Increase OS receive buffer to 16 Megabytes (Default is often 256KB or less)
         boost::asio::socket_base::receive_buffer_size option(128 * 1024 * 1024);
@@ -222,6 +352,7 @@ private:
     udp::endpoint remote_endpoint_;
     std::vector<uint8_t> recv_buffer_{ std::vector<uint8_t>(4*1024, 0) };
     std::map<udp::endpoint, test_udp_connection> KnownClientConnections; // Map of client endpoints to their connection info
+    StatisticsBasic<double> StatsProcessingTime;
 
     void start_receive() {
         // Wait asynchronously for an incoming packet
@@ -272,6 +403,7 @@ private:
     }
 
     void process_packet(std::size_t length) {
+        int rc = 0;
         std::chrono::system_clock::time_point now = std::chrono::system_clock::now();
         std::chrono::steady_clock::time_point nows = std::chrono::steady_clock::now();
         Watchdog& watchdog = Watchdog::GetInstance();
@@ -285,7 +417,7 @@ private:
         // Try to insert a new connection if not present
         auto it = KnownClientConnections.find(remote_endpoint_);
         if (it == KnownClientConnections.end()) {
-            KnownClientConnections[remote_endpoint_] = test_udp_connection(remote_str_log);
+            KnownClientConnections[remote_endpoint_] = test_udp_connection(remote_str_log, chkrCfg);
             KnownClientConnections[remote_endpoint_].connection_time = std::chrono::system_clock::now();
             message = std::string(reinterpret_cast<const char*>(recv_buffer_.data()), length);
             LOG(LoggerVerbosity::INFO, "New Client Connected " + remote_str_log);
@@ -312,12 +444,13 @@ private:
             }
             LOG(LoggerVerbosity::INFO, remote_str_log);
             return;
-        }
-        else {
+        } else {
             // Known Connection
 
         }
-
+#if 1
+        rc = KnownClientConnections[remote_endpoint_].process_packet(recv_buffer_, length, now, nows);
+#else
         if (KnownClientConnections[remote_endpoint_].validPacketStream) {
             KnownClientConnections[remote_endpoint_].StatsRxPackets.addValue(length);
 
@@ -340,7 +473,7 @@ private:
             if (KnownClientConnections[remote_endpoint_].missing_rx_seq_nums.size() > 0) {
                 // Check if this sequence number is in the missing list
                 auto snum = KnownClientConnections[remote_endpoint_].missing_rx_seq_nums.begin()->first;
-                if (snum < testHdr->sequence_num - ReorderWindow) {
+                if (snum < testHdr->sequence_num - chkrCfg.ReorderWindow) {
                     // Missing Sequence number is outside of reorde window
                     auto rx_time = KnownClientConnections[remote_endpoint_].missing_rx_seq_nums.begin()->second;
                     KnownClientConnections[remote_endpoint_].missing_sequence_tracker.update_missing(snum, rx_time);
@@ -419,12 +552,23 @@ private:
                     << " mean=" << to_engineering(KnownClientConnections[remote_endpoint_].StatsLatency.mean())
                     << " max=" << to_engineering(KnownClientConnections[remote_endpoint_].StatsLatency.max())
                     << "\n\t" << KnownClientConnections[remote_endpoint_].missing_sequence_tracker.BriefStats()
-                    << std::endl;               
+                    << std::endl;  
+                rc = 1;
             }
             KnownClientConnections[remote_endpoint_].last_packet_rx_time = nows;
         } else {
             std::cout << "Unhandled Mode for endpoint " << remote_str_log << std::endl;
         }
+#endif
+        std::chrono::steady_clock::time_point endt = std::chrono::steady_clock::now();
+        StatsProcessingTime.addValue(std::chrono::duration<double>(endt - nows).count());    
+        if (rc == 1) {
+            // Client sent STOP command, so remove from known connections
+            std::cout << "\n\nPacket Processing Time: min=" << to_engineering(StatsProcessingTime.min())
+                << " mean=" << to_engineering(StatsProcessingTime.mean())
+                << " max=" << to_engineering(StatsProcessingTime.max())
+				<< std::endl;
+		}
     }
     
     void SendMessage(udp::endpoint remote_endpoint, std::string text) {
@@ -436,9 +580,9 @@ private:
 
 
 int main(int argc, char* argv[]) {
+    CheckerConfiguration CheckerCfg;
     my_logger::LoggerVerbosity verbosity = my_logger::LoggerVerbosity::ERR;
     double WatchdogTimeout = 360;
-	uint32_t ReorderWindowSize = 500;
     std::string LogFile;
     std::string ServerPort = "8080";
 
@@ -480,15 +624,21 @@ int main(int argc, char* argv[]) {
         CLP_Command("server_port, p", "Specifies UDP Port number of server", [&ServerPort](const std::string& argument) {
             ServerPort = argument;
         }, "12000", typeid(std::string)),
-        CLP_Command("reorder_window_size, n", "Specifies the number of packets in reorder window", [&ReorderWindowSize](const std::string& argument) {
+        CLP_Command("reorder_window_size, n", "Specifies the number of packets in reorder window", [&CheckerCfg](const std::string& argument) {
             std::stringstream ss(argument);
             double rws_double;
             if (!(ss >> rws_double && ss.eof())) {
                 std::cerr << "Invalid number packets: " << argument << "\n";
                 exit(10);
             }
-            ReorderWindowSize = static_cast<uint32_t>(rws_double);
+            CheckerCfg.ReorderWindow = static_cast<uint32_t>(rws_double);
         }, "500", typeid(uint32_t)),
+        CLP_Command("no_sequence_check, a", "Disable sequence number checks", [&CheckerCfg](const std::string& argument) {
+            CheckerCfg.no_sequence_num_check = true;
+        }, "", typeid(void)),
+        CLP_Command("no_payload_check, b", "Disable payload checks", [&CheckerCfg](const std::string& argument) {
+            CheckerCfg.no_payload_check = true;
+        }, "", typeid(void)),
         CLP_Command("watchdog,w", "Watchdog timeout in seconds", [&WatchdogTimeout](const std::string& argument) {
             try {
                 WatchdogTimeout = std::stod(argument);
@@ -556,7 +706,7 @@ int main(int argc, char* argv[]) {
     try {
         boost::asio::io_context io_context;
 		short port = static_cast<short>(std::stoi(ServerPort));
-        TestUdpServer server(io_context, port, ReorderWindowSize);
+        TestUdpServer server(io_context, port, CheckerCfg);
         std::cout << "\n\nUDP server running on port "<< port<<"...\n";
         io_context.run();
     }
