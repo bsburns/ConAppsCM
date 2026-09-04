@@ -516,7 +516,7 @@ int main(int argc, char* argv[]) {
         }, "ERR", typeid(std::string)),
         CLP_Command("outdir, d", "Specifies output directory", [](const std::string& argument) {
             OutDir = argument;
-        }, "c:\\local\\output", typeid(std::string)),
+        }, ".\\.output", typeid(std::string)),
         CLP_Command("logfile, l", "Specifies Log file name", [&LogFile](const std::string& argument) {
             LogFile = argument;
         }, "SXTP_TX.log", typeid(std::string)),
@@ -606,8 +606,8 @@ int main(int argc, char* argv[]) {
     fs::path dirPath = OutDir;
     if (!(fs::exists(dirPath) && fs::is_directory(dirPath))) {
         std::cout << "Output Directory does not exist: \"" << OutDir << "\"\n";
-        std::cout << "Exiting Program due to non-existence of output directory\n";
-        exit(300);
+        std::cout << "Creating output directory\n";
+        std::filesystem::create_directory(dirPath);
     }
 
     LOG_INST.SetLogFile(LogFile);
