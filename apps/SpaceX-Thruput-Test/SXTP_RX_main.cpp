@@ -15,6 +15,7 @@
 #include <iostream>
 #include <string>
 #include <sstream>
+#include <fstream>
 #include <memory>
 #include <thread>
 #include <boost/asio.hpp>
@@ -52,6 +53,15 @@ using boost::asio::ip::udp;
 using namespace my_logger;
 namespace fs = std::filesystem;
 
+
+struct CheckerConfiguration {
+    uint32_t ReorderWindow = 500;
+    bool no_sequence_num_check = false;
+    bool no_payload_check = false;
+	bool save_missing_sequence_numbers = false;
+};
+
+
 class MissingSequenceTrackerEntry {
 public:
     uint64_t sequence_number;
@@ -76,18 +86,78 @@ public:
 
 class MissingSequenceTracker {
 public:
-	std::list<MissingSequenceTrackerEntry> missing_entries;
+    std::string streamName;
+    CheckerConfiguration* chkrCfg = nullptr;
+    uint64_t expected_sequence = 0;
+    std::list<MissingSequenceTrackerEntry> missing_entries;
+    std::map<uint64_t, std::chrono::steady_clock::time_point> missing_rx_seq_nums; // key is sequence numbers
+	std::chrono::steady_clock::time_point last_packet_rx_time = std::chrono::steady_clock::now();
+    std::optional<std::ofstream> outputFile;
 
 	// Statistics
     StatisticsBasic<uint64_t> StatsConsecutiveCount;
     StatisticsBasic<uint64_t> StatsConsecutiveTime;
+    uint64_t StatOutOfSequence = 0;
+    uint64_t StatDuplicateSeqNum = 0;
+    uint64_t ReorderedSequenceCount = 0;
+    uint64_t OutsideReorderWindowCount = 0;
 
+    // Default constructor
     MissingSequenceTracker() {}
+
+    MissingSequenceTracker(std::string name, CheckerConfiguration* checkerConfig_) 
+		: streamName(name)
+        , chkrCfg(checkerConfig_) {}
+
+    void check_sequence(uint64_t seq_num, std::chrono::steady_clock::time_point tp) {
+        if (missing_rx_seq_nums.size() > 0) {
+            // Check if this sequence number is in the missing list
+            auto snum = missing_rx_seq_nums.begin()->first;
+            if (snum < seq_num - chkrCfg->ReorderWindow) {
+                // Missing Sequence number is outside of reorde window
+                auto rx_time = missing_rx_seq_nums.begin()->second;
+                update_missing(snum, rx_time);
+                missing_rx_seq_nums.erase(missing_rx_seq_nums.begin());
+            }
+        }
+        if (expected_sequence != seq_num) {
+            StatOutOfSequence++;
+
+            auto it = missing_rx_seq_nums.find(seq_num);
+            if (it != missing_rx_seq_nums.end()) {
+                // Sequence # is already in missing list so rx out of oreder
+                LOG(LoggerVerbosity::ERR, "[Seq=" + std::to_string(seq_num)
+                    + "]: Out of sequence: expected=" + std::to_string(expected_sequence)
+                    + ", received=" + std::to_string(seq_num));
+                missing_rx_seq_nums.erase(seq_num);
+                ReorderedSequenceCount++;
+            }
+            else {
+                // We skipped past expected, so add to missing list and set expected
+                auto last_rx_time = last_packet_rx_time;
+                for (uint64_t seq = expected_sequence; seq < seq_num; ++seq) {
+                    missing_rx_seq_nums[seq] = last_packet_rx_time;
+                }
+                std::prev(missing_rx_seq_nums.end())->second = tp; // set last in sequence to current time
+                expected_sequence = seq_num + 1;
+            }
+        }
+        else {
+            expected_sequence++;
+        }
+        last_packet_rx_time = tp;
+	}
+
+    void closeOutputFile() {
+        if (outputFile && outputFile->is_open()) {
+            outputFile->close();
+            outputFile.reset();
+        }
+	}
 
     void update_missing(uint64_t seq_num, std::chrono::steady_clock::time_point tp) {
         if (missing_entries.empty()) {
             missing_entries.emplace_back(seq_num, tp);
-            return;
         } else {
             auto& last_entry = missing_entries.back();
             if (last_entry.update_missing(seq_num, tp) != 0) {
@@ -97,34 +167,74 @@ public:
 				StatsConsecutiveCount.addValue(last_entry.missing_count);
                 std::chrono::duration<double> missing_duration = last_entry.last_missing_time - last_entry.first_missing_time;
 				StatsConsecutiveTime.addValue(missing_duration.count());
+                if (chkrCfg->save_missing_sequence_numbers) { // save completed entry to file
+                    if (!outputFile) {
+                        fs::path outPath = OutDir;
+                        // Convert to local time or keep as UTC using current_zone()
+                        auto const now = std::chrono::system_clock::now();
+                        std::time_t time_now = std::chrono::system_clock::to_time_t(now);
+
+                        // Convert to local time structure safely
+                        std::tm local_tm = *std::localtime(&time_now);
+
+                        // Stream format into a string
+                        std::stringstream ss;
+                        ss << std::put_time(&local_tm, "%Y%m%d_%H%M%S");
+                        //auto const local_time = std::chrono::current_zone()->to_local(now);
+						//std::string timestamp = std::format("%Y%m%d_%H%M%S", local_time);
+
+                        std::string fn = streamName;
+						std::replace(fn.begin(), fn.end(), '.', '_'); // Replace periods with underscores    
+                        std::replace(fn.begin(), fn.end(), ':', '_'); // Replace colons with underscores    
+
+						fn = ss.str() + "-STRM" + fn;
+                        fn += "_MissingSeq.csv";
+						outPath /= fn;
+						LOG(LoggerVerbosity::CRITICAL, "Saving missing sequence numbers to file: " + outPath.string());
+                        //outputFile.emplace(".output\\test.csv", std::ios::out | std::ios::trunc);
+                        outputFile.emplace(outPath.string(), std::ios::out | std::ios::trunc);
+                        *outputFile << "StartSeq, Count, Elapsed_Time_ns\n";
+                    }
+                    auto missing_duration = std::chrono::duration_cast<std::chrono::nanoseconds>(last_entry.last_missing_time - last_entry.first_missing_time);
+                    *outputFile << last_entry.sequence_number << ", " << last_entry.missing_count << ", " << missing_duration.count() << "\n";
+                }
             }
         }
 	}
 
     std::string BriefStats() const {
         std::stringstream ss;
-        ss << "MissingSequenceConsecutive: Groups=" << missing_entries.size();
-        ss << " | MinGrp=" << StatsConsecutiveCount.min();
-        ss << " | AvgGrp=" << StatsConsecutiveCount.mean();
-        ss << " | MaxGrp=" << StatsConsecutiveCount.max();
-        ss << " | MinElapseTime=" << to_engineering(StatsConsecutiveTime.min());
-        ss << " | AvgElapseTime=" << to_engineering(StatsConsecutiveTime.mean());
-        ss << " | MaxElapseTime=" << to_engineering(StatsConsecutiveTime.max());
+        uint64_t StatOutOfSequence = 0;
+        uint64_t StatDuplicateSeqNum = 0;
+        uint64_t ReorderedSequenceCount = 0;
+        uint64_t OutsideReorderWindowCount = 0;
 
+        ss << "SeqStats: {";
+        ss << " OOS=" << StatOutOfSequence;
+        ss << " | REORDERED=" << ReorderedSequenceCount;
+		ss << " | OUTSIDE_REORDER_WINDOW=" << OutsideReorderWindowCount;
+		ss << " | DUPLICATE_SEQ=" << StatDuplicateSeqNum;
+        ss << " | MissingSequenceConsecutive: Groups=" << missing_entries.size();
+        if (missing_entries.size() > 0) {
+            ss << " | MinGrp=" << StatsConsecutiveCount.min();
+            ss << " | AvgGrp=" << StatsConsecutiveCount.mean();
+            ss << " | MaxGrp=" << StatsConsecutiveCount.max();
+            ss << " | MinElapseTime=" << to_engineering(StatsConsecutiveTime.min());
+            ss << " | AvgElapseTime=" << to_engineering(StatsConsecutiveTime.mean());
+            ss << " | MaxElapseTime=" << to_engineering(StatsConsecutiveTime.max());
+        }
+        ss << " | InWindowMissingSeqNum=" << missing_rx_seq_nums.size()
+            << " (" << missing_rx_seq_nums.size() * 100.0 / expected_sequence << "%)";
+        ss << "}";
         return ss.str();
     }
 };
 
-struct CheckerConfiguration {
-    uint32_t ReorderWindow = 500;
-    bool no_sequence_num_check = false;
-    bool no_payload_check = false;
-};
 
 class test_udp_connection {
 public:
     std::string name;
-    CheckerConfiguration chkrCfg;
+    CheckerConfiguration* chkrCfg;
     bool validPacketStream = false;
     uint16_t srcPort = 0;
     uint32_t srcIP = 0;
@@ -133,25 +243,20 @@ public:
     std::chrono::system_clock::time_point connection_time; // Track when the connection was established
     std::chrono::system_clock::time_point last_output_time = std::chrono::system_clock::now(); // Track when the connection was established
     std::chrono::steady_clock::time_point last_packet_rx_time = std::chrono::steady_clock::now();
-    uint64_t expected_sequence = 0;
-    std::map<uint64_t, std::chrono::steady_clock::time_point> missing_rx_seq_nums; // key is sequence numbers
 	MissingSequenceTracker missing_sequence_tracker; // Track missing sequence numbers
 
     // Statistics
     StatisticsRTM<uint64_t> StatsRxPackets;
     StatisticsRTM<uint64_t> StatsBadPackets;
     StatisticsBasic<double> StatsLatency;
-    uint64_t StatOutOfSequence = 0;
     uint64_t StatBadPacketData = 0;
     uint64_t StatBadLength = 0;
-    uint64_t StatDuplicateSeqNum = 0;
-	uint64_t ReorderedSequenceCount = 0;
-    uint64_t OutsideReorderWindowCount = 0;
 
     test_udp_connection() {}
-    test_udp_connection(std::string conn_name_, CheckerConfiguration& checkerConfig_)
+    test_udp_connection(std::string conn_name_, CheckerConfiguration* checkerConfig_)
         : name(conn_name_)
         , chkrCfg(checkerConfig_)
+		, missing_sequence_tracker(conn_name_, checkerConfig_)
         , StatsRxPackets(conn_name_ + ":RxPkts", nullptr)
         , StatsBadPackets(conn_name_ + ":BadPkts", nullptr)
 		, StatsLatency(conn_name_ + ":Latency", nullptr)
@@ -183,42 +288,10 @@ public:
 
             // Verify data
             bool packet_error = false;
-            if (!chkrCfg.no_sequence_num_check) {
-                if (missing_rx_seq_nums.size() > 0) {
-                    // Check if this sequence number is in the missing list
-                    auto snum = missing_rx_seq_nums.begin()->first;
-                    if (snum < testHdr->sequence_num - chkrCfg.ReorderWindow) {
-                        // Missing Sequence number is outside of reorde window
-                        auto rx_time = missing_rx_seq_nums.begin()->second;
-                        missing_sequence_tracker.update_missing(snum, rx_time);
-                        missing_rx_seq_nums.erase(missing_rx_seq_nums.begin());
-                    }
-                }
-                if (expected_sequence != testHdr->sequence_num) {
-                    StatOutOfSequence++;
-                    auto it = missing_rx_seq_nums.find(testHdr->sequence_num);
-                    if (it != missing_rx_seq_nums.end()) {
-                        // Sequence # is already in missing list so rx out of oreder
-                        LOG(LoggerVerbosity::ERR, "[Seq=" + std::to_string(testHdr->sequence_num)
-                            + "]: Out of sequence: expected=" + std::to_string(expected_sequence)
-                            + ", received=" + std::to_string(testHdr->sequence_num));
-                        missing_rx_seq_nums.erase(testHdr->sequence_num);
-                        ReorderedSequenceCount++;
-                    }
-                    else {
-                        // We skipped past expected, so add to missing list and set expected
-                        auto last_rx_time = last_packet_rx_time;
-                        for (uint64_t seq = expected_sequence; seq < testHdr->sequence_num; ++seq) {
-                            missing_rx_seq_nums[seq] = last_packet_rx_time;
-                        }
-                        std::prev(missing_rx_seq_nums.end())->second = nows; // set last in sequence to current time
-                        expected_sequence = testHdr->sequence_num + 1;
-                    }
-                }
-                else {
-                    expected_sequence++;
-                }
-            }
+            if (!chkrCfg->no_sequence_num_check) {
+				missing_sequence_tracker.check_sequence(testHdr->sequence_num, nows);
+			} // end sequence check
+
             if (length != testHdr->length) {
                 LOG(LoggerVerbosity::ERR, "[Seq=" + std::to_string(testHdr->sequence_num)
                     + "]: Data length and leng mismatch: "
@@ -230,7 +303,7 @@ public:
                 packet_error = true;
             }
 
-            if (!chkrCfg.no_payload_check) {
+            if (!chkrCfg->no_payload_check) {
                 uint16_t err_count = 0;
                 for (size_t i = testHdr->Size(); i < testHdr->length + testHdr->Size(); ++i) {
                     if (receive_buffer_[i] != testHdr->pattern) {
@@ -264,14 +337,12 @@ public:
             if (cmd == (uint8_t)PacketHeaderStripeTest::Command::STOP) {
                 std::cout << "\n\nReceived STOP command from client: " << name 
                     << "\nFINAL STATS:\n" << BriefStats()
-                    << "\n\tMissingSeqNum=" << missing_rx_seq_nums.size()
-                    << " (" << missing_rx_seq_nums.size() * 100.0 / expected_sequence << "%)"
-                    << "\n\tLatency: min=" << to_engineering(StatsLatency.min())
+                    << "\n\nLatency: min=" << to_engineering(StatsLatency.min())
                     << " mean=" << to_engineering(StatsLatency.mean())
                     << " max=" << to_engineering(StatsLatency.max())
-                    << "\n\t" << missing_sequence_tracker.BriefStats()
                     << std::endl;
 				rc = 1; // Indicate to the server that this connection should be closed
+				missing_sequence_tracker.closeOutputFile();
             }
             last_packet_rx_time = nows;
         } else {
@@ -285,14 +356,11 @@ public:
         ss << name;
         ss << ": RXP=" << StatsRxPackets.count();
         ss << " | RXpps=" << to_engineering(StatsRxPackets.periodCountRate());
-
         ss << " | RXB=" << StatsRxPackets.sum();
         ss << " | RXbps=" << to_engineering(StatsRxPackets.periodUnitRate() * 8);
         ss << " | BADP=" << StatsBadPackets.count();
-        ss << " | OOS=" << StatOutOfSequence;
-        ss << " | REORDERED=" << ReorderedSequenceCount;
-		ss << " | MissSEQ=" << missing_rx_seq_nums.size();
 		ss << " | LATus=" << to_engineering(StatsLatency.mean());
+		ss << " | " << missing_sequence_tracker.BriefStats();
 
         return ss.str();
     }
@@ -301,7 +369,7 @@ public:
 
 class TestUdpServer {
 public:
-    CheckerConfiguration chkrCfg;
+    CheckerConfiguration* chkrCfg;
     const MenuItem cli_menu =
     {
     .name = "show",
@@ -331,7 +399,7 @@ public:
     };
 
     // Bind to the given port on all available network interfaces
-    TestUdpServer(boost::asio::io_context& io_context, short port_, CheckerConfiguration& checkerCfg_)
+    TestUdpServer(boost::asio::io_context& io_context, short port_, CheckerConfiguration* checkerCfg_)
         : socket_(io_context, udp::endpoint(udp::v4(), port_))
         , port(port_)
 		, chkrCfg(checkerCfg_)
@@ -420,7 +488,7 @@ private:
             KnownClientConnections[remote_endpoint_] = test_udp_connection(remote_str_log, chkrCfg);
             KnownClientConnections[remote_endpoint_].connection_time = std::chrono::system_clock::now();
             message = std::string(reinterpret_cast<const char*>(recv_buffer_.data()), length);
-            LOG(LoggerVerbosity::INFO, "New Client Connected " + remote_str_log);
+            LOG(LoggerVerbosity::CRITICAL, "New Client Connected: " + remote_str_log);
             uint16_t srcPort = 0;
             uint32_t srcIP = 0;
             decodeRemoteString(remote_str, srcIP, srcPort);
@@ -448,118 +516,9 @@ private:
             // Known Connection
 
         }
-#if 1
+
         rc = KnownClientConnections[remote_endpoint_].process_packet(recv_buffer_, length, now, nows);
-#else
-        if (KnownClientConnections[remote_endpoint_].validPacketStream) {
-            KnownClientConnections[remote_endpoint_].StatsRxPackets.addValue(length);
 
-            // Extract Test Header
-            auto testHdr = std::make_shared<PacketHeaderStripeTest>(recv_buffer_);
-            length -= testHdr->Size();
-
-            LOG(LoggerVerbosity::INFO, remote_str_log
-                + " - PM: Received Packet:"
-                + " length=" + std::to_string(length)
-                + " " + testHdr->to_string()
-            );
-
-            auto duration = std::chrono::microseconds(testHdr->timestamp);
-            std::chrono::time_point<std::chrono::system_clock> timestamp(duration);
-			std::chrono::duration<double> latency = now - timestamp;
-            KnownClientConnections[remote_endpoint_].StatsLatency.addValue(latency.count());
-
-            // Verify data
-            if (KnownClientConnections[remote_endpoint_].missing_rx_seq_nums.size() > 0) {
-                // Check if this sequence number is in the missing list
-                auto snum = KnownClientConnections[remote_endpoint_].missing_rx_seq_nums.begin()->first;
-                if (snum < testHdr->sequence_num - chkrCfg.ReorderWindow) {
-                    // Missing Sequence number is outside of reorde window
-                    auto rx_time = KnownClientConnections[remote_endpoint_].missing_rx_seq_nums.begin()->second;
-                    KnownClientConnections[remote_endpoint_].missing_sequence_tracker.update_missing(snum, rx_time);
-                    KnownClientConnections[remote_endpoint_].missing_rx_seq_nums.erase(KnownClientConnections[remote_endpoint_].missing_rx_seq_nums.begin());
-                }
-            }
-            bool packet_error = false;
-            if (KnownClientConnections[remote_endpoint_].expected_sequence != testHdr->sequence_num) {
-                KnownClientConnections[remote_endpoint_].StatOutOfSequence++;
-                auto it = KnownClientConnections[remote_endpoint_].missing_rx_seq_nums.find(testHdr->sequence_num);
-                if (it != KnownClientConnections[remote_endpoint_].missing_rx_seq_nums.end()) {
-                    // Sequence # is already in missing list so rx out of oreder
-                    LOG(LoggerVerbosity::ERR, "[Seq=" + std::to_string(testHdr->sequence_num)
-                        + "]: Out of sequence: expected=" + std::to_string(KnownClientConnections[remote_endpoint_].expected_sequence)
-                        + ", received=" + std::to_string(testHdr->sequence_num));
-                    KnownClientConnections[remote_endpoint_].missing_rx_seq_nums.erase(testHdr->sequence_num);
-                    KnownClientConnections[remote_endpoint_].ReorderedSequenceCount++;
-                } else {
-                    // We skipped past expected, so add to missing list and set expected
-                    auto last_rx_time = KnownClientConnections[remote_endpoint_].last_packet_rx_time;
-                    for (uint64_t seq = KnownClientConnections[remote_endpoint_].expected_sequence; seq < testHdr->sequence_num; ++seq) {
-                        KnownClientConnections[remote_endpoint_].missing_rx_seq_nums[seq] = KnownClientConnections[remote_endpoint_].last_packet_rx_time;
-                    }
-                    std::prev(KnownClientConnections[remote_endpoint_].missing_rx_seq_nums.end())->second = nows; // set last in sequence to current time
-					KnownClientConnections[remote_endpoint_].expected_sequence = testHdr->sequence_num + 1;
-                }
-            } else {
-                KnownClientConnections[remote_endpoint_].expected_sequence++;
-            }
-            if (length != testHdr->length) {
-                LOG(LoggerVerbosity::ERR, "[Seq=" + std::to_string(testHdr->sequence_num) 
-                    + "]: Data length and leng mismatch: "
-                    "length=" + std::to_string(length)
-                    + ", tstHdr.length=" + std::to_string(testHdr->length)
-					+ "  Stats=" + KnownClientConnections[remote_endpoint_].BriefStats()
-                );
-                KnownClientConnections[remote_endpoint_].StatBadLength++;
-                packet_error = true;
-            }
-
-            uint16_t err_count = 0;
-            for (size_t i = testHdr->Size(); i < testHdr->length + testHdr->Size(); ++i) {
-                if (recv_buffer_[i] != testHdr->pattern) {
-                    err_count++;
-                }
-            }
-            if (err_count) {
-                LOG(LoggerVerbosity::ERR, "Data bytes do not match pattern: "
-                    "length=" + std::to_string(length)
-                    + ", pattern=" + std::to_string(testHdr->pattern)
-                    + ", error_count=" + std::to_string(err_count)
-                );
-                KnownClientConnections[remote_endpoint_].StatBadPacketData++;
-                packet_error = true;
-            }
-            if (packet_error) {
-                KnownClientConnections[remote_endpoint_].StatsBadPackets.addValue(length);
-            }
-
-			auto curr_time = std::chrono::system_clock::now();
-            std::chrono::duration<double> elapsed_output = curr_time - KnownClientConnections[remote_endpoint_].last_output_time;
-
-            if (elapsed_output.count() > 1.0) {
-                std::cout <<"\nPeriodic: "
-                    << " SEQ=" << testHdr->sequence_num << " "
-                    << KnownClientConnections[remote_endpoint_].BriefStats();
-				KnownClientConnections[remote_endpoint_].last_output_time = now;
-			}
-            auto cmd = testHdr->command;
-            if (cmd == (uint8_t)PacketHeaderStripeTest::Command::STOP) {
-                LOG(LoggerVerbosity::CRITICAL, "Received STOP command from client " + remote_str_log);
-                std::cout << "\n" << KnownClientConnections[remote_endpoint_].BriefStats() << std::endl
-                    << "\tMissingSeqNum=" << KnownClientConnections[remote_endpoint_].missing_rx_seq_nums.size() 
-					<< " (" << KnownClientConnections[remote_endpoint_].missing_rx_seq_nums.size() * 100.0 / KnownClientConnections[remote_endpoint_].expected_sequence<< "%)"
-					<< "\n\tLatency: min=" << to_engineering(KnownClientConnections[remote_endpoint_].StatsLatency.min())
-                    << " mean=" << to_engineering(KnownClientConnections[remote_endpoint_].StatsLatency.mean())
-                    << " max=" << to_engineering(KnownClientConnections[remote_endpoint_].StatsLatency.max())
-                    << "\n\t" << KnownClientConnections[remote_endpoint_].missing_sequence_tracker.BriefStats()
-                    << std::endl;  
-                rc = 1;
-            }
-            KnownClientConnections[remote_endpoint_].last_packet_rx_time = nows;
-        } else {
-            std::cout << "Unhandled Mode for endpoint " << remote_str_log << std::endl;
-        }
-#endif
         std::chrono::steady_clock::time_point endt = std::chrono::steady_clock::now();
         StatsProcessingTime.addValue(std::chrono::duration<double>(endt - nows).count());    
         if (rc == 1) {
@@ -613,7 +572,7 @@ int main(int argc, char* argv[]) {
         }, "ERR", typeid(std::string)),
         CLP_Command("outdir, d", "Specifies output directory", [](const std::string& argument) {
             OutDir = argument;
-        }, "c:\\local\\output", typeid(std::string)),
+        }, ".\\.output", typeid(std::string)),
         CLP_Command("logfile, l", "Specifies Log file name", [&LogFile](const std::string& argument) {
             LogFile = argument;
         }, "SXTP_RX.log", typeid(std::string)),
@@ -639,6 +598,9 @@ int main(int argc, char* argv[]) {
         CLP_Command("no_payload_check, b", "Disable payload checks", [&CheckerCfg](const std::string& argument) {
             CheckerCfg.no_payload_check = true;
         }, "", typeid(void)),
+        CLP_Command("save_missing_sequence_numbers, c", "Save missing sequence numbers to a file", [&CheckerCfg](const std::string& argument) {
+            CheckerCfg.save_missing_sequence_numbers = true;
+        }, "", typeid(void)),
         CLP_Command("watchdog,w", "Watchdog timeout in seconds", [&WatchdogTimeout](const std::string& argument) {
             try {
                 WatchdogTimeout = std::stod(argument);
@@ -660,8 +622,8 @@ int main(int argc, char* argv[]) {
     fs::path dirPath = OutDir;
     if (!(fs::exists(dirPath) && fs::is_directory(dirPath))) {
         std::cout << "Output Directory does not exist: \"" << OutDir << "\"\n";
-        std::cout << "Exiting Program due to non-existence of output directory\n";
-        exit(300);
+        std::cout << "Creating output directory\n";
+        std::filesystem::create_directory(dirPath);
     }
 
     LOG_INST.SetLogFile(LogFile);
@@ -706,7 +668,7 @@ int main(int argc, char* argv[]) {
     try {
         boost::asio::io_context io_context;
 		short port = static_cast<short>(std::stoi(ServerPort));
-        TestUdpServer server(io_context, port, CheckerCfg);
+        TestUdpServer server(io_context, port, &CheckerCfg);
         std::cout << "\n\nUDP server running on port "<< port<<"...\n";
         io_context.run();
     }

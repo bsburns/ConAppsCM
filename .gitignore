@@ -21,6 +21,7 @@ x64/
 [Bb]uild/
 .[Ll]ogs/
 .[Hh]istory/
+.[Oo]utput/
 
 # MSTest test Results
 [Tt]est[Rr]esult*/

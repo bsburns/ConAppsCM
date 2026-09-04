@@ -366,6 +366,7 @@ public:
         if (PacketRate > 0) {
 			burst_size = std::max<uint32_t>(1, (uint32_t)(PacketRate * target_burst_interval));
 			packet_burst_interval = pkt_tx_time * burst_size; // seconds for burst
+            packet_burst_interval *= 0.95; // Fast Start
             //packet_burst_interval *= 1.7; // magic factor to make rate work
         }
         double skip_interval = pkt_tx_time * SkipCount;
@@ -387,6 +388,7 @@ public:
                 auto skip_condition = sequence % SkipInterval;
                 if (skip_condition == 0 && sequence != 0) {
                     sequence += SkipCount;
+					NumPackets -= SkipCount; // Adjust total packets to send
                     LOG(LoggerVerbosity::DEBUG, "PacketGenerator: Skipping " + std::to_string(SkipCount) + " packets at sequence=" + std::to_string(sequence));
                     std::this_thread::sleep_for(std::chrono::duration<double>(skip_interval));
                 }
@@ -459,7 +461,7 @@ public:
 		std::cout << "\nSleep Time Stats: " << StatsSleepTime.ToString();
 		std::cout << "\nBurst Time Stats: " << StatsBurstTime.ToString();
 		std::cout << "\nPacket Time Stats: " << StatsPktTime.ToString();
-        std::cout << "\nElapsed Time: " << elapsed.count() << " seconds  Overall Rate=" << overall_rate << "\n";
+        std::cout << "\nElapsed Time: " << elapsed.count() << " seconds  Overall Rate=" << to_engineering(overall_rate) << "\n";
     }
 
     void ConfigurePktBfr(uint8_t pattern) {
