@@ -69,6 +69,8 @@ public:
     std::chrono::steady_clock::time_point first_missing_time;
     std::chrono::steady_clock::time_point last_missing_time;
     uint32_t missing_count = 0;
+    bool written = false;
+
     MissingSequenceTrackerEntry(uint64_t seq_num, std::chrono::steady_clock::time_point tp)
         : sequence_number(seq_num)
         , first_missing_time(tp)
@@ -150,7 +152,23 @@ public:
 	}
 
     void closeOutputFile() {
+        // Close remaining missing sequence numbers
+        for (auto& entry : missing_rx_seq_nums) {
+            auto snum = entry.first;
+            auto rx_time = entry.second;
+            update_missing(snum, rx_time);
+		}
+        missing_rx_seq_nums.clear();
         if (outputFile && outputFile->is_open()) {
+
+            if (missing_entries.size()) {
+                // Write last entry
+                auto& last_entry = missing_entries.back();
+                if (!last_entry.written) {
+                    auto missing_duration = std::chrono::duration_cast<std::chrono::nanoseconds>(last_entry.last_missing_time - last_entry.first_missing_time);
+                    *outputFile << last_entry.sequence_number << ", " << last_entry.missing_count << ", " << missing_duration.count() << "\n";
+                }
+            }
 			outputFile->flush();
             outputFile->close();
             outputFile.reset();
@@ -204,6 +222,7 @@ public:
                     auto missing_duration = std::chrono::duration_cast<std::chrono::nanoseconds>(last_entry.last_missing_time - last_entry.first_missing_time);
                     *outputFile << last_entry.sequence_number << ", " << last_entry.missing_count << ", " << missing_duration.count() << "\n";
                     outputFile->flush();
+                    last_entry.written = true;
                 }
             }
         }
