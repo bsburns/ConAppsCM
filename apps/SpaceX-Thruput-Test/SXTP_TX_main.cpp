@@ -450,7 +450,8 @@ public:
         std::chrono::system_clock::time_point last_tx_time = std::chrono::system_clock::now();
         pkt_header.timestamp = std::chrono::duration_cast<std::chrono::microseconds>(last_tx_time.time_since_epoch()).count();
         pkt_header.command = (uint8_t)PacketHeaderStripeTest::Command::STOP;
-        
+        client.SendTestData(pkt_header, pkt_buffer, PacketSize);
+
         std::chrono::duration<double> elapsed = std::chrono::steady_clock::now() - start_time;
 		double overall_rate = StatsTxPackets.count() / elapsed.count();
 
