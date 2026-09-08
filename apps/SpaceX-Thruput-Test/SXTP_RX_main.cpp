@@ -59,6 +59,7 @@ struct CheckerConfiguration {
     bool no_sequence_num_check = false;
     bool no_payload_check = false;
 	bool save_missing_sequence_numbers = false;
+	bool make_output_filename_unique = true;
 };
 
 
@@ -150,6 +151,7 @@ public:
 
     void closeOutputFile() {
         if (outputFile && outputFile->is_open()) {
+			outputFile->flush();
             outputFile->close();
             outputFile.reset();
         }
@@ -170,26 +172,30 @@ public:
                 if (chkrCfg->save_missing_sequence_numbers) { // save completed entry to file
                     if (!outputFile) {
                         fs::path outPath = OutDir;
-                        // Convert to local time or keep as UTC using current_zone()
-                        auto const now = std::chrono::system_clock::now();
-                        std::time_t time_now = std::chrono::system_clock::to_time_t(now);
+                        if (chkrCfg->make_output_filename_unique) {
+                            // Convert to local time or keep as UTC using current_zone()
+                            auto const now = std::chrono::system_clock::now();
+                            std::time_t time_now = std::chrono::system_clock::to_time_t(now);
 
-                        // Convert to local time structure safely
-                        std::tm local_tm = *std::localtime(&time_now);
+                            // Convert to local time structure safely
+                            std::tm local_tm = *std::localtime(&time_now);
 
-                        // Stream format into a string
-                        std::stringstream ss;
-                        ss << std::put_time(&local_tm, "%Y%m%d_%H%M%S");
-                        //auto const local_time = std::chrono::current_zone()->to_local(now);
-						//std::string timestamp = std::format("%Y%m%d_%H%M%S", local_time);
+                            // Stream format into a string
+                            std::stringstream ss;
+                            ss << std::put_time(&local_tm, "%Y%m%d_%H%M%S");
+                            //auto const local_time = std::chrono::current_zone()->to_local(now);
+                            //std::string timestamp = std::format("%Y%m%d_%H%M%S", local_time);
 
-                        std::string fn = streamName;
-						std::replace(fn.begin(), fn.end(), '.', '_'); // Replace periods with underscores    
-                        std::replace(fn.begin(), fn.end(), ':', '_'); // Replace colons with underscores    
+                            std::string fn = streamName;
+                            std::replace(fn.begin(), fn.end(), '.', '_'); // Replace periods with underscores    
+                            std::replace(fn.begin(), fn.end(), ':', '_'); // Replace colons with underscores    
 
-						fn = ss.str() + "-STRM" + fn;
-                        fn += "_MissingSeq.csv";
-						outPath /= fn;
+                            fn = ss.str() + "-STRM" + fn;
+                            fn += "_MissingSeq.csv";
+                            outPath /= fn;
+                        } else {
+                            outPath /= "MissingSeq.csv";
+						}
 						LOG(LoggerVerbosity::CRITICAL, "Saving missing sequence numbers to file: " + outPath.string());
                         //outputFile.emplace(".output\\test.csv", std::ios::out | std::ios::trunc);
                         outputFile.emplace(outPath.string(), std::ios::out | std::ios::trunc);
@@ -197,6 +203,7 @@ public:
                     }
                     auto missing_duration = std::chrono::duration_cast<std::chrono::nanoseconds>(last_entry.last_missing_time - last_entry.first_missing_time);
                     *outputFile << last_entry.sequence_number << ", " << last_entry.missing_count << ", " << missing_duration.count() << "\n";
+                    outputFile->flush();
                 }
             }
         }
@@ -600,6 +607,9 @@ int main(int argc, char* argv[]) {
         }, "", typeid(void)),
         CLP_Command("save_missing_sequence_numbers, c", "Save missing sequence numbers to a file", [&CheckerCfg](const std::string& argument) {
             CheckerCfg.save_missing_sequence_numbers = true;
+        }, "", typeid(void)),
+        CLP_Command("no_unique_output_filename, z", "Do not make Output filename unique", [&CheckerCfg](const std::string& argument) {
+            CheckerCfg.make_output_filename_unique = false;
         }, "", typeid(void)),
         CLP_Command("watchdog,w", "Watchdog timeout in seconds", [&WatchdogTimeout](const std::string& argument) {
             try {

@@ -399,13 +399,8 @@ public:
             std::chrono::steady_clock::time_point tx_time = std::chrono::steady_clock::now();
             std::chrono::system_clock::time_point sys_tx_time = std::chrono::system_clock::now();
             pkt_header.timestamp = std::chrono::duration_cast<std::chrono::microseconds>(sys_tx_time.time_since_epoch()).count();
+            pkt_header.command = (uint8_t)PacketHeaderStripeTest::Command::NOMINAL;
             client.SendTestData(pkt_header, pkt_buffer, PacketSize);
-            if (StatsTxPackets.count() == NumPackets - 1) {
-                pkt_header.command = (uint8_t)PacketHeaderStripeTest::Command::STOP;
-            }
-            else {
-                pkt_header.command = (uint8_t)PacketHeaderStripeTest::Command::NOMINAL;
-            }
 
             auto curr_time = std::chrono::steady_clock::now();
             std::chrono::duration<double> elapsed_output = curr_time - last_output_time;
@@ -448,6 +443,13 @@ public:
 				last_burst_time = std::chrono::steady_clock::now();
             }
         }
+
+		// Send final Packet with STOP command
+        pkt_header.sequence_num = sequence++;
+        StatsTxPackets.addValue(PacketSize);
+        std::chrono::system_clock::time_point last_tx_time = std::chrono::system_clock::now();
+        pkt_header.timestamp = std::chrono::duration_cast<std::chrono::microseconds>(last_tx_time.time_since_epoch()).count();
+        pkt_header.command = (uint8_t)PacketHeaderStripeTest::Command::STOP;
         
         std::chrono::duration<double> elapsed = std::chrono::steady_clock::now() - start_time;
 		double overall_rate = StatsTxPackets.count() / elapsed.count();

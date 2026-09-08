@@ -186,6 +186,12 @@ public:
         std::string str;
         str  = std::to_string(sum_) + ", ";
         str += std::to_string(mean()) + ", ";
+        if (min_ == std::numeric_limits<T>::max()) {
+            str += "NaN, ";
+        }
+        else {
+            str += std::to_string(min_) + ", ";
+        }
         str += std::to_string(min_) + ", ";
         str += std::to_string(max_) + ", ";
         str += std::to_string(count_) + ", ";
@@ -197,6 +203,11 @@ public:
         std::string str = "LongName=" + Base::LongName;
         str += "\n\tsum="+ std::to_string(sum_);
         str += " mean=" + std::to_string(mean());
+        if (min_ == std::numeric_limits<T>::max()) {
+            str += " min=NaN";
+        } else {
+            str += " min=" + std::to_string(min_);
+		}
         str += " min=" + std::to_string(min_);
         str += " max=" + std::to_string(max_);
         str += " cnt=" + std::to_string(count_);
