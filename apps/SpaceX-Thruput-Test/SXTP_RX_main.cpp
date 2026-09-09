@@ -111,6 +111,7 @@ public:
 class MissingSequenceTracker {
 public:
     std::string streamName;
+    std::string filenamePrefix = "";
     CheckerConfiguration* chkrCfg = nullptr;
     uint64_t expected_sequence = 0;
     std::list<MissingSequenceTrackerEntry> missing_entries;
@@ -133,6 +134,10 @@ public:
     MissingSequenceTracker(std::string name, CheckerConfiguration* checkerConfig_) 
 		: streamName(name)
         , chkrCfg(checkerConfig_) {}
+
+    void SetFilenamePrefix(const std::string& prefix) {
+        filenamePrefix = prefix;
+    }
 
     void check_sequence(uint64_t seq_num, std::chrono::steady_clock::time_point tp) {
         if (missing_rx_seq_nums.size() > 0) {
@@ -211,31 +216,14 @@ public:
             if (chkrCfg->save_missing_sequence_numbers) { // save completed entry to file
                 if (!outputFile) {
                     fs::path outPath = OutDir;
-                    if (chkrCfg->make_output_filename_unique) {
-                        // Convert to local time or keep as UTC using current_zone()
-                        auto const now = std::chrono::system_clock::now();
-                        std::time_t time_now = std::chrono::system_clock::to_time_t(now);
-
-                        // Convert to local time structure safely
-                        std::tm local_tm = *std::localtime(&time_now);
-
-                        // Stream format into a string
-                        std::stringstream ss;
-                        ss << std::put_time(&local_tm, "%Y%m%d_%H%M%S");
-                        //auto const local_time = std::chrono::current_zone()->to_local(now);
-                        //std::string timestamp = std::format("%Y%m%d_%H%M%S", local_time);
-
-                        std::string fn = streamName;
-                        std::replace(fn.begin(), fn.end(), '.', '_'); // Replace periods with underscores    
-                        std::replace(fn.begin(), fn.end(), ':', '_'); // Replace colons with underscores    
-
-                        fn = ss.str() + "-STRM" + fn;
+                    std::string fn = filenamePrefix;
+					if (!fn.empty()) {
                         fn += "_MissingSeq.csv";
-                        outPath /= fn;
                     } else {
-                        outPath /= "MissingSeq.csv";
+						fn = "MissingSeq.csv";
 					}
-					LOG(LoggerVerbosity::CRITICAL, "Saving missing sequence numbers to file: " + outPath.string());
+                    outPath /= fn;
+                    LOG(LoggerVerbosity::CRITICAL, "Saving missing sequence numbers to file: " + outPath.string());
                     //outputFile.emplace(".output\\test.csv", std::ios::out | std::ios::trunc);
                     outputFile.emplace(outPath.string(), std::ios::out | std::ios::trunc);
 					last_entry.write_header(*outputFile);
@@ -279,6 +267,7 @@ public:
 class test_udp_connection {
 public:
     std::string name;
+    std::string filenamePrefix;
     CheckerConfiguration* chkrCfg;
     bool validPacketStream = false;
     uint16_t srcPort = 0;
@@ -289,6 +278,7 @@ public:
     std::chrono::system_clock::time_point last_output_time = std::chrono::system_clock::now(); // Track when the connection was established
     std::chrono::steady_clock::time_point last_packet_rx_time = std::chrono::steady_clock::now();
 	MissingSequenceTracker missing_sequence_tracker; // Track missing sequence numbers
+    std::optional<std::ofstream> logFile;
 
     // Statistics
     StatisticsRTM<uint64_t> StatsRxPackets;
@@ -307,6 +297,60 @@ public:
 		, StatsLatency(conn_name_ + ":Latency", nullptr)
     {
 		last_output_time = std::chrono::system_clock::now();
+        if (chkrCfg->make_output_filename_unique) {
+            // Convert to local time or keep as UTC using current_zone()
+            auto const now = std::chrono::system_clock::now();
+            std::time_t time_now = std::chrono::system_clock::to_time_t(now);
+
+            // Convert to local time structure safely
+            std::tm local_tm = *std::localtime(&time_now);
+
+            // Stream format into a string
+            std::stringstream ss;
+            ss << std::put_time(&local_tm, "%Y%m%d_%H%M%S");
+            //auto const local_time = std::chrono::current_zone()->to_local(now);
+            //std::string timestamp = std::format("%Y%m%d_%H%M%S", local_time);
+
+            std::string fn = name;
+            std::replace(fn.begin(), fn.end(), '.', '_'); // Replace periods with underscores    
+            std::replace(fn.begin(), fn.end(), ':', '_'); // Replace colons with underscores    
+
+            filenamePrefix = ss.str() + "-STRM" + fn;
+        }
+        else {
+            filenamePrefix = "";
+        }
+		missing_sequence_tracker.SetFilenamePrefix(filenamePrefix);
+
+        if (chkrCfg->save_missing_sequence_numbers) { // also save log
+            fs::path outPath = OutDir;
+            std::string fn = filenamePrefix;
+            if (!fn.empty()) {
+                fn += "_LOG.csv";
+            }
+            else {
+                fn = "LOG.csv";
+            }
+            outPath /= fn;
+			LOG(LoggerVerbosity::CRITICAL, "Saving Logs to file: " + outPath.string());
+            logFile.emplace(outPath.string(), std::ios::out | std::ios::trunc);
+			write_log_header(*logFile);
+		}
+    }
+
+    void write_log_header(std::ofstream& ofs) {
+        ofs << "Time, SequenceNumber, MissingCount, MissingPerc, PPS" << std::endl;
+    }
+
+    void write_log_file(std::ofstream& ofs, std::chrono::system_clock::time_point curr_time, uint64_t seq) {
+		if (!logFile) return;
+        std::string utc_str = std::format("{:%F %T}", curr_time);
+
+        ofs << utc_str << ", "
+            << seq << ", "
+            << missing_sequence_tracker.MissingSequenceCount << ", "
+			<< (missing_sequence_tracker.MissingSequenceCount * 100.0 / missing_sequence_tracker.expected_sequence) << ", "
+            << to_engineering(StatsRxPackets.periodCountRate()) << std::endl;
     }
 
     int process_packet(const std::vector<uint8_t>& receive_buffer_, std::size_t length,
@@ -377,6 +421,7 @@ public:
                     << " SEQ=" << testHdr->sequence_num << " "
                     << BriefStats();
                 last_output_time = now;
+				write_log_file(*logFile, curr_time, testHdr->sequence_num);
             }
             auto cmd = testHdr->command;
             if (cmd == (uint8_t)PacketHeaderStripeTest::Command::STOP) {
@@ -388,6 +433,12 @@ public:
                     << std::endl;
 				rc = 1; // Indicate to the server that this connection should be closed
 				missing_sequence_tracker.closeOutputFile();
+                write_log_file(*logFile, curr_time, testHdr->sequence_num);
+                if (logFile && logFile->is_open()) {
+                    logFile->flush();
+                    logFile->close();
+                    logFile.reset();
+				}
             }
             last_packet_rx_time = nows;
         } else {
@@ -534,6 +585,7 @@ private:
             KnownClientConnections[remote_endpoint_].connection_time = std::chrono::system_clock::now();
             message = std::string(reinterpret_cast<const char*>(recv_buffer_.data()), length);
             LOG(LoggerVerbosity::CRITICAL, "New Client Connected: " + remote_str_log);
+            last_write_time = std::chrono::steady_clock::now();
             uint16_t srcPort = 0;
             uint32_t srcIP = 0;
             decodeRemoteString(remote_str, srcIP, srcPort);

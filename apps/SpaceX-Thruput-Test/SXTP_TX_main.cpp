@@ -465,6 +465,8 @@ public:
 		std::cout << "\nBurst Time Stats: " << StatsBurstTime.ToString();
 		std::cout << "\nPacket Time Stats: " << StatsPktTime.ToString();
         std::cout << "\nElapsed Time: " << elapsed.count() << " seconds  Overall Rate=" << to_engineering(overall_rate) << "\n";
+
+        exit(0);
     }
 
     void ConfigurePktBfr(uint8_t pattern) {
