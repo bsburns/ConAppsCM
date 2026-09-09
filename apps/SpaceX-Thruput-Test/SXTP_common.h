@@ -10,6 +10,7 @@
  */
 #include <bit> // Required for std::bit_cast
 #include <span>
+#include <chrono>
 
 #include "logger.h"
 using namespace my_logger;
@@ -43,4 +44,11 @@ inline std::string to_engineering(double value, int precision = 2) {
         << (exp_eng >= 0 ? "+" : "") << exp_eng;
 
     return ss.str();
+}
+
+inline auto steady_to_system(std::chrono::steady_clock::time_point target) {
+    auto steady_now = std::chrono::steady_clock::now();
+    auto system_now = std::chrono::system_clock::now();
+    auto duration_passed = target - steady_now;
+    return system_now + duration_passed;
 }

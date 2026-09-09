@@ -53,6 +53,7 @@ using boost::asio::ip::udp;
 using namespace my_logger;
 namespace fs = std::filesystem;
 
+std::chrono::steady_clock::time_point last_write_time = std::chrono::steady_clock::now();
 
 struct CheckerConfiguration {
     uint32_t ReorderWindow = 500;
@@ -85,6 +86,26 @@ public:
         ++missing_count;
 		return 0;
     }
+    void write_header(std::ofstream& ofs) {
+        ofs << "StartTime, DeltaT, SequenceNumber, MissingCount, MissingDurationSeconds" << std::endl;
+    }
+
+    void write_to_file(std::ofstream& ofs) {
+        if (!written) {
+            auto missing_duration = std::chrono::duration_cast<std::chrono::nanoseconds>(last_missing_time - first_missing_time);
+            auto period_between_missing_groups = std::chrono::duration_cast<std::chrono::nanoseconds>(first_missing_time - last_write_time);
+			last_write_time = first_missing_time;
+			            auto ftime = steady_to_system(first_missing_time);
+            std::string utc_str = std::format("{:%F %T}", ftime);
+
+            ofs << utc_str << ", "
+				<< to_engineering(period_between_missing_groups.count() / 1e9) << ", "
+                << sequence_number << ", " 
+                << missing_count << ", " 
+                << to_engineering(missing_duration.count() / 1e9) << std::endl;
+            written = true;
+        }
+	}
 };
 
 class MissingSequenceTracker {
@@ -104,6 +125,7 @@ public:
     uint64_t StatDuplicateSeqNum = 0;
     uint64_t ReorderedSequenceCount = 0;
     uint64_t OutsideReorderWindowCount = 0;
+	uint64_t MissingSequenceCount = 0;
 
     // Default constructor
     MissingSequenceTracker() {}
@@ -117,9 +139,9 @@ public:
             // Check if this sequence number is in the missing list
             auto snum = missing_rx_seq_nums.begin()->first;
             if (snum < seq_num - chkrCfg->ReorderWindow) {
-                // Missing Sequence number is outside of reorde window
+                // Missing Sequence number is outside of reorder window
                 auto rx_time = missing_rx_seq_nums.begin()->second;
-                update_missing(snum, rx_time);
+                MissingSequenceCount += update_missing(snum, rx_time);
                 missing_rx_seq_nums.erase(missing_rx_seq_nums.begin());
             }
         }
@@ -128,8 +150,8 @@ public:
 
             auto it = missing_rx_seq_nums.find(seq_num);
             if (it != missing_rx_seq_nums.end()) {
-                // Sequence # is already in missing list so rx out of oreder
-                LOG(LoggerVerbosity::ERR, "[Seq=" + std::to_string(seq_num)
+                // Sequence # is already in missing list so rx out of order
+                LOG(LoggerVerbosity::WARNING, "[Seq=" + std::to_string(seq_num)
                     + "]: Out of sequence: expected=" + std::to_string(expected_sequence)
                     + ", received=" + std::to_string(seq_num));
                 missing_rx_seq_nums.erase(seq_num);
@@ -156,18 +178,14 @@ public:
         for (auto& entry : missing_rx_seq_nums) {
             auto snum = entry.first;
             auto rx_time = entry.second;
-            update_missing(snum, rx_time);
+            MissingSequenceCount += update_missing(snum, rx_time);
 		}
         missing_rx_seq_nums.clear();
         if (outputFile && outputFile->is_open()) {
-
             if (missing_entries.size()) {
                 // Write last entry
                 auto& last_entry = missing_entries.back();
-                if (!last_entry.written) {
-                    auto missing_duration = std::chrono::duration_cast<std::chrono::nanoseconds>(last_entry.last_missing_time - last_entry.first_missing_time);
-                    *outputFile << last_entry.sequence_number << ", " << last_entry.missing_count << ", " << missing_duration.count() << "\n";
-                }
+				last_entry.write_to_file(*outputFile);
             }
 			outputFile->flush();
             outputFile->close();
@@ -175,57 +193,57 @@ public:
         }
 	}
 
-    void update_missing(uint64_t seq_num, std::chrono::steady_clock::time_point tp) {
+    uint64_t update_missing(uint64_t seq_num, std::chrono::steady_clock::time_point tp) {
         if (missing_entries.empty()) {
             missing_entries.emplace_back(seq_num, tp);
-        } else {
-            auto& last_entry = missing_entries.back();
-            if (last_entry.update_missing(seq_num, tp) != 0) {
-				// Not a continuation of the last missing sequence, so create a new entry 
-                missing_entries.emplace_back(seq_num, tp);
+			return 0;
+        }
+        auto& last_entry = missing_entries.back();
+        uint64_t retVal = 0;
+        if (last_entry.update_missing(seq_num, tp) != 0) {
+			// Not a continuation of the last missing sequence, so create a new entry 
+            missing_entries.emplace_back(seq_num, tp);
 
-				StatsConsecutiveCount.addValue(last_entry.missing_count);
-                std::chrono::duration<double> missing_duration = last_entry.last_missing_time - last_entry.first_missing_time;
-				StatsConsecutiveTime.addValue(missing_duration.count());
-                if (chkrCfg->save_missing_sequence_numbers) { // save completed entry to file
-                    if (!outputFile) {
-                        fs::path outPath = OutDir;
-                        if (chkrCfg->make_output_filename_unique) {
-                            // Convert to local time or keep as UTC using current_zone()
-                            auto const now = std::chrono::system_clock::now();
-                            std::time_t time_now = std::chrono::system_clock::to_time_t(now);
+			StatsConsecutiveCount.addValue(last_entry.missing_count);
+			retVal = last_entry.missing_count;
+            std::chrono::duration<double> missing_duration = last_entry.last_missing_time - last_entry.first_missing_time;
+			StatsConsecutiveTime.addValue(missing_duration.count());
+            if (chkrCfg->save_missing_sequence_numbers) { // save completed entry to file
+                if (!outputFile) {
+                    fs::path outPath = OutDir;
+                    if (chkrCfg->make_output_filename_unique) {
+                        // Convert to local time or keep as UTC using current_zone()
+                        auto const now = std::chrono::system_clock::now();
+                        std::time_t time_now = std::chrono::system_clock::to_time_t(now);
 
-                            // Convert to local time structure safely
-                            std::tm local_tm = *std::localtime(&time_now);
+                        // Convert to local time structure safely
+                        std::tm local_tm = *std::localtime(&time_now);
 
-                            // Stream format into a string
-                            std::stringstream ss;
-                            ss << std::put_time(&local_tm, "%Y%m%d_%H%M%S");
-                            //auto const local_time = std::chrono::current_zone()->to_local(now);
-                            //std::string timestamp = std::format("%Y%m%d_%H%M%S", local_time);
+                        // Stream format into a string
+                        std::stringstream ss;
+                        ss << std::put_time(&local_tm, "%Y%m%d_%H%M%S");
+                        //auto const local_time = std::chrono::current_zone()->to_local(now);
+                        //std::string timestamp = std::format("%Y%m%d_%H%M%S", local_time);
 
-                            std::string fn = streamName;
-                            std::replace(fn.begin(), fn.end(), '.', '_'); // Replace periods with underscores    
-                            std::replace(fn.begin(), fn.end(), ':', '_'); // Replace colons with underscores    
+                        std::string fn = streamName;
+                        std::replace(fn.begin(), fn.end(), '.', '_'); // Replace periods with underscores    
+                        std::replace(fn.begin(), fn.end(), ':', '_'); // Replace colons with underscores    
 
-                            fn = ss.str() + "-STRM" + fn;
-                            fn += "_MissingSeq.csv";
-                            outPath /= fn;
-                        } else {
-                            outPath /= "MissingSeq.csv";
-						}
-						LOG(LoggerVerbosity::CRITICAL, "Saving missing sequence numbers to file: " + outPath.string());
-                        //outputFile.emplace(".output\\test.csv", std::ios::out | std::ios::trunc);
-                        outputFile.emplace(outPath.string(), std::ios::out | std::ios::trunc);
-                        *outputFile << "StartSeq, Count, Elapsed_Time_ns\n";
-                    }
-                    auto missing_duration = std::chrono::duration_cast<std::chrono::nanoseconds>(last_entry.last_missing_time - last_entry.first_missing_time);
-                    *outputFile << last_entry.sequence_number << ", " << last_entry.missing_count << ", " << missing_duration.count() << "\n";
-                    outputFile->flush();
-                    last_entry.written = true;
+                        fn = ss.str() + "-STRM" + fn;
+                        fn += "_MissingSeq.csv";
+                        outPath /= fn;
+                    } else {
+                        outPath /= "MissingSeq.csv";
+					}
+					LOG(LoggerVerbosity::CRITICAL, "Saving missing sequence numbers to file: " + outPath.string());
+                    //outputFile.emplace(".output\\test.csv", std::ios::out | std::ios::trunc);
+                    outputFile.emplace(outPath.string(), std::ios::out | std::ios::trunc);
+					last_entry.write_header(*outputFile);
                 }
+                last_entry.write_to_file(*outputFile);
             }
         }
+		return retVal;
 	}
 
     std::string BriefStats() const {
@@ -240,6 +258,7 @@ public:
         ss << " | REORDERED=" << ReorderedSequenceCount;
 		ss << " | OUTSIDE_REORDER_WINDOW=" << OutsideReorderWindowCount;
 		ss << " | DUPLICATE_SEQ=" << StatDuplicateSeqNum;
+        ss << " | MISSING_SEQ=" << MissingSequenceCount << " / " << expected_sequence << "("<< MissingSequenceCount * 100.0 / expected_sequence << "%)";
         ss << " | MissingSequenceConsecutive: Groups=" << missing_entries.size();
         if (missing_entries.size() > 0) {
             ss << " | MinGrp=" << StatsConsecutiveCount.min();
