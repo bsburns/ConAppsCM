@@ -465,8 +465,6 @@ public:
 		std::cout << "\nBurst Time Stats: " << StatsBurstTime.ToString();
 		std::cout << "\nPacket Time Stats: " << StatsPktTime.ToString();
         std::cout << "\nElapsed Time: " << elapsed.count() << " seconds  Overall Rate=" << to_engineering(overall_rate) << "\n";
-
-        exit(0);
     }
 
     void ConfigurePktBfr(uint8_t pattern) {
@@ -649,7 +647,7 @@ int main(int argc, char* argv[]) {
     CMP.SetPrompt("SXTP_TX> ");
     CMP.AddSubMenu(LOG_INST.cli_menu);
     CMP.AddSubMenu(Watchdog::GetInstance().cli_menu);
-    TM.StartThread("CLIInput", CliMenuProcessor::GetUserInput_thread);
+    //TM.StartThread("CLIInput", CliMenuProcessor::GetUserInput_thread);
 
     try {
         boost::asio::io_context io_context;
@@ -666,6 +664,8 @@ int main(int argc, char* argv[]) {
     // Wait for threads to join
     LOG(LoggerVerbosity::INFO, "Waiting threads to join...");
     watchdog.StopMonitoring(); 
+	//TM.ForceStopAllThreads(); // Signal all threads to stop
+    
     TM.WaitAllThreads(); // Wait for all threads to finish
     return 0;
 }

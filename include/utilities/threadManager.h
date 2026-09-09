@@ -13,6 +13,10 @@
 #include <map>
 #include "logger.h"
 
+#ifdef _WIN32
+#include <windows.h>
+#endif
+
 
 class ThreadManager {
 private:
@@ -55,6 +59,20 @@ public:
 		LOG(my_logger::LoggerVerbosity::CRITICAL, "Setting Force Stop to TRUE");
 		force_stop.store(true);
 	}
+	void ForceStopAllThreads() {
+        for (auto& [name, thread] : threads) {
+            LOG(my_logger::LoggerVerbosity::CRITICAL, "Force stopping thread: " + name);
+#ifdef _WIN32
+            // WARNING: TerminateThread is dangerous and should be avoided if possible.
+            // Prefer cooperative cancellation. This is for emergency use only.
+            TerminateThread(thread.native_handle(), 0);
+#else
+            // On non-Windows platforms, there is no direct equivalent.
+            // You may need to implement cooperative cancellation.
+            LOG(my_logger::LoggerVerbosity::CRITICAL, "TerminateThread is not supported on this platform.");
+#endif
+        }
+    }
 
 	void WaitAllThreads() {
 		for (auto& [name, thread] : threads) {
