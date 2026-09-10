@@ -148,4 +148,6 @@ _NCrunch*
 
 
 # Jupyter Notebooks
- **/*.ipynb_checkpoints/
+ */.ipynb_checkpoints/
+ .ipynb_checkpoints/*
+ python/JupyterNotebooks/.ipynb_checkpoints/*

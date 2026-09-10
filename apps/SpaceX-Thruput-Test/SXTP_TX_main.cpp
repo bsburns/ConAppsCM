@@ -18,12 +18,15 @@
 #include <boost/asio.hpp>
 
 #include "SXTP_common.h"
-#include "commandLineParser.h"
 #include "watchdog.h"
 #include "threadManager.h"
-#include "cli/CLI.h"
-#include "PacketHeader/PacketHeader.h"
+#include "PacketHeader.h"
 #include "statistics.h"
+#include "CommandLineParser.h"
+#if INCLUDE_CLI_MENU
+#include "cli/CLI.h"
+#endif
+
 
 
 using boost::asio::ip::udp;
@@ -388,7 +391,7 @@ public:
                 auto skip_condition = sequence % SkipInterval;
                 if (skip_condition == 0 && sequence != 0) {
                     sequence += SkipCount;
-					NumPackets -= SkipCount; // Adjust total packets to send
+					//NumPackets -= SkipCount; // Adjust total packets to send
                     LOG(LoggerVerbosity::DEBUG, "PacketGenerator: Skipping " + std::to_string(SkipCount) + " packets at sequence=" + std::to_string(sequence));
                     std::this_thread::sleep_for(std::chrono::duration<double>(skip_interval));
                 }
@@ -642,12 +645,14 @@ int main(int argc, char* argv[]) {
         LOG(LoggerVerbosity::CRITICAL, "Arguments = " + arg_string);
     }
 
+#if INCLUDE_CLI_MENU
     // Start CLI input thread
     auto& CMP = CliMenuProcessor::GetInstance(".SXTP_TX.command_history");
     CMP.SetPrompt("SXTP_TX> ");
     CMP.AddSubMenu(LOG_INST.cli_menu);
     CMP.AddSubMenu(Watchdog::GetInstance().cli_menu);
     //TM.StartThread("CLIInput", CliMenuProcessor::GetUserInput_thread);
+#endif
 
     try {
         boost::asio::io_context io_context;

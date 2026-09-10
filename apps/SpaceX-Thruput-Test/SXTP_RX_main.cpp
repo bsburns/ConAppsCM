@@ -21,12 +21,14 @@
 #include <boost/asio.hpp>
 
 #include "SXTP_common.h"
-#include "commandLineParser.h"
 #include "watchdog.h"
 #include "threadManager.h"
-#include "cli/CLI.h"
 #include "statistics.h"
 #include "PacketHeader.h"
+#include "CommandLineParser.h"
+#if INCLUDE_CLI_MENU
+#include "cli/CLI.h"
+#endif
 
 
 std::string OutDir = "";
@@ -339,7 +341,7 @@ public:
     }
 
     void write_log_header(std::ofstream& ofs) {
-        ofs << "Time, SequenceNumber, MissingCount, MissingPerc, PPS" << std::endl;
+        ofs << "Time, SequenceNumber, MissingCount, MissingPerc, PPS, bps" << std::endl;
     }
 
     void write_log_file(std::ofstream& ofs, std::chrono::system_clock::time_point curr_time, uint64_t seq) {
@@ -350,7 +352,9 @@ public:
             << seq << ", "
             << missing_sequence_tracker.MissingSequenceCount << ", "
 			<< (missing_sequence_tracker.MissingSequenceCount * 100.0 / missing_sequence_tracker.expected_sequence) << ", "
-            << to_engineering(StatsRxPackets.periodCountRate()) << std::endl;
+            << to_engineering(StatsRxPackets.periodCountRate()) << ", "
+            << to_engineering(StatsRxPackets.periodUnitRate() * 8) << ", "
+            << std::endl;
     }
 
     int process_packet(const std::vector<uint8_t>& receive_buffer_, std::size_t length,
@@ -466,6 +470,7 @@ public:
 class TestUdpServer {
 public:
     CheckerConfiguration* chkrCfg;
+#if INCLUDE_CLI_MENU
     const MenuItem cli_menu =
     {
     .name = "show",
@@ -493,6 +498,7 @@ public:
         }
         },
     };
+#endif
 
     // Bind to the given port on all available network interfaces
     TestUdpServer(boost::asio::io_context& io_context, short port_, CheckerConfiguration* checkerCfg_)
@@ -755,12 +761,14 @@ int main(int argc, char* argv[]) {
         LOG(LoggerVerbosity::CRITICAL, "Arguments = " + arg_string);
     }
 
+#if INCLUDE_CLI_MENU
     // Start CLI input thread
     auto& CMP = CliMenuProcessor::GetInstance(".SXTP_RX.command_history");
     CMP.SetPrompt("SXTP_RX> ");
     CMP.AddSubMenu(LOG_INST.cli_menu);
     CMP.AddSubMenu(Watchdog::GetInstance().cli_menu);
     TM.StartThread("CLIInput", CliMenuProcessor::GetUserInput_thread);
+#endif
 
     // Create LCT engine
     //auto engine = LCT_Engine();

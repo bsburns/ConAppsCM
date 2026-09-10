@@ -1,6 +1,4 @@
 
-
-
 # Find the Boost package (headers are implicitly required)
 if (WIN32)
     set(Boost_USE_STATIC_LIBS ON)

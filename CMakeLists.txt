@@ -14,6 +14,9 @@ execute_process(
 # Pass the hash to your C++ code as a macro
 add_definitions("-DGIT_HASH=\"${GIT_HASH}\"")
 
+# Pass the #define to your C++ code to disable the CLI menu
+add_definitions("-DINCLUDE_CLI_MENU=1")
+
 # Execute the shell command 'hostname' and save it to a CMake variable
 execute_process(COMMAND hostname OUTPUT_VARIABLE BUILD_MACHINE OUTPUT_STRIP_TRAILING_WHITESPACE)
 # Pass that variable as a preprocessor definition to your C++ code
