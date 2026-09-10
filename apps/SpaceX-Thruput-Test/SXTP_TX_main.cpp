@@ -378,6 +378,7 @@ public:
 			<< " | Burst Interval: " << packet_burst_interval << " seconds"
             << " | Burst Size: " << burst_size << " packets"
 			<< " | Run Time: " << RunTime << " seconds"
+			<< " | Pkt Interval: " << to_engineering(pkt_tx_time) << " seconds"
             << std::endl;
 
         std::chrono::steady_clock::time_point start_time = std::chrono::steady_clock::now();
