@@ -32,6 +32,7 @@ private:
 	}
 
 public:
+#if INCLUDE_CLI_MENU
 	const MenuItem cli_menu =
     	{
 		.name = "watchdog",
@@ -55,7 +56,7 @@ public:
 			std::cout << "\nWatchdog Timeout is " << Watchdog::GetInstance().GetTimeout() << " seconds\n";
 		},
 	};
-
+#endif
 
 	static Watchdog& GetInstance() {
 		static Watchdog instance; // Guaranteed to be destroyed and instantiated on first use.
@@ -75,7 +76,11 @@ public:
 		auto last_active_time = std::chrono::high_resolution_clock::now();
 		bool warning_issued = false;
 		while (!TM.force_stop.load() && !GetInstance().local_force_stop.load()) {
-			if (GetInstance().activity.load()) {
+			if (GetInstance().timeout_s <= 0) {
+				// Watchdog is disabled, just sleep and continue
+				std::this_thread::sleep_for(std::chrono::milliseconds(500));
+				continue;
+			} else if (GetInstance().activity.load()) {
 				GetInstance().activity.store(false);
 				warning_issued = false;
 				last_active_time = std::chrono::high_resolution_clock::now();

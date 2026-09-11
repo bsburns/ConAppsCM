@@ -22,7 +22,7 @@
 #include "threadManager.h"
 #include "PacketHeader.h"
 #include "statistics.h"
-#include "CommandLineParser.h"
+#include "commandLineParser.h"
 #if INCLUDE_CLI_MENU
 #include "cli/CLI.h"
 #endif
@@ -489,7 +489,7 @@ public:
 
 int main(int argc, char* argv[]) {
     my_logger::LoggerVerbosity verbosity = my_logger::LoggerVerbosity::ERR;
-    double WatchdogTimeout = 360;
+    double WatchdogTimeout = 0;
     std::string LogFile;
     std::string ServerPort = "8080";
 	std::string SourcePort = "0";
@@ -597,10 +597,10 @@ int main(int argc, char* argv[]) {
                 WatchdogTimeout = std::stod(argument);
             }
             catch (const std::exception& e) {
-                std::cerr << "\nInvalid watchdog timeout value: " << argument << ". Setting to default 360 seconds.\n";
-                WatchdogTimeout = 360;
+                std::cerr << "\nInvalid watchdog timeout value: " << argument << ". Setting to default 0 or infinite.\n";
+                WatchdogTimeout = 0;
             }
-        }, "360", typeid(double)),
+        }, "0", typeid(double)),
         });
 
     LOG(LoggerVerbosity::DEBUG, show_version());

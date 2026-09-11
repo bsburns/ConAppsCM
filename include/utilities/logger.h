@@ -20,8 +20,10 @@
 #include <iomanip>
 
 #include "magic_enum.hpp"
-#include "cli/CliMenu.h"
 
+#if INCLUDE_CLI_MENU
+#include "cli/CliMenu.h"
+#endif
 namespace fs = std::filesystem;
 
 #define LOG_INST my_logger::MyLogger::GetInstance()
@@ -67,6 +69,7 @@ enum class LoggerVerbosity : int {
 		LoggerVerbosity verbosity = LoggerVerbosity::ERR;
 		fs::path      log_filename;
 		std::ofstream log_file;
+#if INCLUDE_CLI_MENU
 		const MenuItem cli_menu = {
 			.name = "logger",
 			.description = "Commands to control logger",
@@ -104,7 +107,7 @@ enum class LoggerVerbosity : int {
 			.valType = MenuItemValueTypes::SUBMENU,
 			.executeCommand = [this](MenuItemValueTypes vt, const std::string& argument) {this->cli_menu.Help(); }
 		};
-
+#endif
 		MyLogger(const MyLogger&) = delete; // Delete copy constructor
 		MyLogger& operator=(const MyLogger&) = delete; // Delete copy assignment operator
 		MyLogger(MyLogger&&) = delete; // Delete move constructor
